@@ -1,0 +1,73 @@
+{
+  "manifest_version": 3,
+  "name": "Rust Drops Companion",
+  "version": "5.30",
+  "description": "Tracks Rust Twitch drops: claimed, live now (per streamer), unclaimed, progress",
+  "permissions": [
+    "tabs",
+    "storage",
+    "alarms",
+    "notifications",
+    "offscreen",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://*.twitch.tv/*",
+    "https://gql.twitch.tv/*",
+    "https://twitch.facepunch.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.twitch.tv/*"
+      ],
+      "js": [
+        "content_auth.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.twitch.tv/drops/inventory*"
+      ],
+      "js": [
+        "content_inventory.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.twitch.tv/drops/campaigns*"
+      ],
+      "js": [
+        "content_campaigns.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.twitch.tv/directory/category/rust*"
+      ],
+      "js": [
+        "content_directory.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

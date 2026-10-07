@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+    <style>
+      :root {
+        --ink: #e5e5e5;
+        --muted: #8a94a6;
+        --line: #3a3f45;
+        --bg: #0e0e0e;
+        --bg-2: #151516;
+        --bg-3: #1e1e1f;
+        --copper: #e91916;   /* Twitch red accent */
+        --copper-dim: #b31312;
+        --live: #22c57e;
+        --live-ink: #032d1a;
+        --danger: #ef4444;
+        --source-red: #e91916;   /* Twitch round OR no-round = red */
+        --kick: #53fc18;         /* Kick round = green */
+        --source: var(--source-red);
+        --radius: 10px;
+        --shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
+        --thumb-bg: #252526;
+        --watch-bg: #1e1e1f;
+        --dock-bg: #131314;
+        --pbar-bg: #252526;
+        --slider-bg: #2d2d30;
+        --bug-bg: #0e0e0e;
+        --settab-active-bg: #1e1e1f;
+        --scrollbar-thumb: #45454a;
+        --overlay-bg: rgba(0, 0, 0, 0.65);
+        --tag-ready: #22c57e;
+        --tag-claimed: #2a2a2e;
+      }
+
+      /* dark theme (default). light overrides the palette below */
+      body[data-mode="dark"] {
+        --ink: #e5e5e5;
+        --muted: #8a94a6;
+        --line: #3a3f45;
+        --bg: #0e0e0e;
+        --bg-2: #151516;
+        --bg-3: #1e1e1f;
+        --copper: #e91916;
+        --copper-dim: #b31312;
+        --live: #22c57e;
+        --live-ink: #032d1a;
+        --danger: #ef4444;
+        --source-red: #e91916;
+        --kick: #53fc18;
+        --thumb-bg: #252526;
+        --watch-bg: #1e1e1f;
+        --dock-bg: #131314;
+        --pbar-bg: #252526;
+        --slider-bg: #2d2d30;
+        --bug-bg: #0e0e0e;
+        --settab-active-bg: #1e1e1f;
+        --scrollbar-thumb: #45454a;
+        --overlay-bg: rgba(0, 0, 0, 0.65);
+        --tag-ready: #22c57e;
+        --tag-claimed: #2a2a2e;
+      }
+      body[data-mode="light"] {
+        --ink: #2a211b;
+        --muted: #6b5e53;
+        --line: #d6c7b8;
+        --bg: #f6f1ec;
+        --bg-2: #f0e9e1;
+        --bg-3: #e6ddd3;
+        --copper: #b05a10;
+        --copper-dim: #8a450c;
+        --live: #22c57e;
+        --live-ink: #062214;
+        --danger: #c0392b;
+        --source-red: #c0392b;
+        --kick: #1a9c07;
+        --thumb-bg: #e5d8cc;
+        --watch-bg: #e6d9c8;
+        --dock-bg: #ece3d9;
+        --pbar-bg: #e0d4c4;
+        --slider-bg: #d9cdc0;
+        --bug-bg: #f0e9e1;
+        --settab-active-bg: #d8ccc0;
+        --scrollbar-thumb: #b8aaa0;
+        --overlay-bg: rgba(0, 0, 0, 0.35);
+        --tag-ready: #b6e55d;
+        --tag-claimed: #d4a87a;
+      }
+
+      body[data-theme="kick"] {
+        --source: var(--kick);
+      }
+
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+
+      body {
+        width: 430px;
+        /* Chrome/Firefox clamp extension popups at 600px tall; anything
+           larger gets cropped and the bottom dock becomes unreachable. */
+        height: 600px;
+        max-height: 600px;
+        color: var(--ink);
+        background:
+          radial-gradient(1200px 280px at 10% -20%, rgba(224, 138, 74, 0.16), transparent 55%),
+          var(--bg);
+        font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .chrome {
+        padding: 14px 14px 10px;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent);
+      }
+      .chrome-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .brand { min-width: 0; }
+      .brand-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .mark {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        object-fit: cover;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+        flex-shrink: 0;
+      }
+      .brand h1 {
+        font-size: 15px;
+        font-weight: 750;
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+      }
+      .brand .kicker {
+        margin-top: 4px;
+        font-size: 10px;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 250px;
+      }
+      .source-chip {
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #1a1410;
+        background: var(--source);
+        border-radius: 999px;
+        padding: 2px 7px;
+      }
+
+      .scan-col {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      .round-timer {
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--copper);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .scan-btn {
+        border: 0;
+        cursor: pointer;
+        color: #ffffff;
+        background: linear-gradient(180deg, var(--copper-dim), var(--copper));
+        font: 750 12px/1 "Segoe UI", sans-serif;
+        padding: 9px 14px;
+        border-radius: 9px;
+        box-shadow: 0 6px 16px rgba(147, 23, 23, 0.35);
+      }
+      .scan-btn:hover { filter: brightness(1.06); }
+      .scan-btn:disabled { opacity: 0.55; cursor: not-allowed; filter: none; }
+
+      .toolbar {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px 14px;
+      }
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 6px;
+        padding: 4px;
+        background: var(--bg-2);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      .tab {
+        border: 0;
+        cursor: pointer;
+        text-align: center;
+        padding: 8px 4px;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
+        font: 700 10px/1.2 "Segoe UI", sans-serif;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .tab .badge {
+        display: inline-block;
+        min-width: 16px;
+        margin-left: 4px;
+        color: var(--ink);
+      }
+      .tab.active {
+        background: var(--bg-3);
+        color: var(--ink);
+        box-shadow: inset 0 0 0 1px rgba(224, 138, 74, 0.35);
+      }
+      .tab.active .badge { color: var(--copper); }
+
+      .search-wrap { position: relative; }
+      .search-input {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: var(--bg-2);
+        color: var(--ink);
+        border-radius: 10px;
+        padding: 9px 12px 9px 34px;
+        font: 500 12px/1.2 "Segoe UI", sans-serif;
+        outline: none;
+      }
+      .search-wrap::before {
+        content: "";
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        width: 12px;
+        height: 12px;
+        transform: translateY(-50%);
+        border: 2px solid var(--muted);
+        border-radius: 50%;
+        box-shadow: 7px 7px 0 -5px var(--muted);
+        pointer-events: none;
+      }
+      .search-input:focus {
+        border-color: var(--copper);
+        box-shadow: 0 0 0 3px rgba(224, 138, 74, 0.18);
+      }
+
+      .content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 0 14px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .content.inventory {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        align-content: start;
+      }
+      .content::-webkit-scrollbar { width: 8px; }
+      .content::-webkit-scrollbar-thumb {
+        background: var(--scrollbar-thumb);
+        border-radius: 8px;
+        border: 2px solid var(--bg);
+      }
+
+      .drop-card {
+        display: grid;
+        grid-template-columns: 108px 1fr;
+        gap: 12px;
+        padding: 10px;
+        background: var(--bg-2);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        box-shadow: var(--shadow);
+      }
+      .drop-card:hover { border-color: rgba(224, 138, 74, 0.55); }
+
+      .thumb,
+      .thumb-fallback {
+        width: 108px;
+        height: 108px;
+        border-radius: 10px;
+        object-fit: cover;
+        background: var(--thumb-bg);
+        border: 1px solid #4a3c32;
+      }
+      .thumb-fallback {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .drop-body { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+      .drop-name {
+        font-size: 14px;
+        font-weight: 750;
+        line-height: 1.25;
+      }
+      .drop-meta { display: flex; flex-wrap: wrap; gap: 5px; }
+      .tag {
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        padding: 4px 7px;
+        border-radius: 999px;
+        background: var(--bg-3);
+        color: var(--muted);
+        border: 1px solid var(--line);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+      }
+      .tag-live { background: var(--live); color: var(--live-ink); border-color: transparent; }
+      .tag-ready { background: var(--tag-ready); color: #1c2806; border-color: transparent; }
+      .tag-claimed { background: var(--tag-claimed); color: var(--copper); border-color: rgba(224,138,74,0.4); }
+
+      .pbar-wrap { display: flex; align-items: center; gap: 8px; }
+      .pbar {
+        flex: 1;
+        height: 9px;
+        background: var(--pbar-bg);
+        border-radius: 99px;
+        overflow: hidden;
+      }
+      .pbar > div {
+        height: 100%;
+        width: 0;
+        background: linear-gradient(90deg, var(--copper-dim), var(--copper));
+      }
+      .pbar.full > div { background: linear-gradient(90deg, #2f9e68, #6ee7a8); }
+      .pbar-pct { font-size: 11px; font-weight: 800; color: var(--copper); min-width: 34px; text-align: right; }
+      .pbar-time { font-size: 11px; font-weight: 800; color: var(--muted); min-width: 44px; text-align: right; white-space: nowrap; }
+
+      .streamer-row { display: flex; flex-wrap: wrap; gap: 6px; }
+      .watch-link {
+        display: inline-flex;
+        align-items: center;
+        text-decoration: none;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 6px 9px;
+        border-radius: 8px;
+        background: var(--watch-bg);
+        color: var(--ink);
+        border: 1px solid var(--line);
+      }
+      .watch-link.live { background: var(--live); color: var(--live-ink); border-color: transparent; }
+      .watch-link.offline { color: var(--muted); }
+
+      .tile {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 8px;
+        background: var(--bg-2);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        min-width: 0;
+      }
+      .tile .thumb,
+      .tile .thumb-fallback {
+        width: 100%;
+        height: 132px;
+        border-radius: 10px;
+      }
+      .tile .drop-name {
+        font-size: 12px;
+        padding: 0 2px 2px;
+      }
+
+      .empty-state {
+        grid-column: 1 / -1;
+        text-align: center;
+        padding: 48px 18px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .empty-state strong { color: var(--ink); display: block; font-size: 15px; margin-bottom: 6px; }
+
+      .dock {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+        padding: 10px 14px 12px;
+        border-top: 1px solid var(--line);
+        background: var(--dock-bg);
+      }
+      .dock button {
+        border: 1px solid var(--line);
+        background: var(--bg-2);
+        color: var(--ink);
+        border-radius: 10px;
+        padding: 10px 8px;
+        cursor: pointer;
+        font: 700 11px/1 "Segoe UI", sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+      }
+      .dock button svg { width: 15px; height: 15px; flex-shrink: 0; }
+      .dock button:hover { border-color: var(--copper); color: var(--copper); }
+
+      .overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        background: var(--overlay-bg);
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding: 12px;
+      }
+      .sheet {
+        width: 100%;
+        max-height: 560px;
+        overflow: auto;
+        background: var(--bg-2);
+        border: 1px solid var(--line);
+        border-radius: 16px 16px 12px 12px;
+        padding: 16px;
+        box-shadow: var(--shadow);
+      }
+      .sheet-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .sheet-head h2 { font-size: 16px; }
+      .sheet-actions { display: flex; gap: 8px; }
+      .ghost, .danger-btn, .primary-btn {
+        border: 1px solid var(--line);
+        background: var(--bg-3);
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font: 700 11px/1 "Segoe UI", sans-serif;
+      }
+      .danger-btn { color: var(--danger); }
+      .primary-btn { background: var(--copper); color: #ffffff; border-color: transparent; width: 100%; }
+      .about-copy { color: var(--muted); font-size: 13px; line-height: 1.6; }
+      .about-copy b { color: var(--copper); }
+      .bug-text {
+        width: 100%;
+        height: 110px;
+        margin-top: 10px;
+        display: none;
+        background: var(--bug-bg);
+        color: #ef9a86;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        font: 11px/1.4 Consolas, monospace;
+      }
+
+      .settabs { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+      .settab {
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--muted);
+        border-radius: 8px;
+        padding: 8px 6px;
+        cursor: pointer;
+        font: 700 11px/1 "Segoe UI", sans-serif;
+      }
+      .settab.active { color: var(--ink); border-color: var(--copper); background: var(--settab-active-bg); }
+      .settings-section {
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 12px;
+        margin-bottom: 10px;
+      }
+      .settings-group-title {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--copper);
+        font-weight: 800;
+        margin-bottom: 8px;
+      }
+      .set-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+      .set-label { font-size: 13px; flex: 1; }
+      .sound-select {
+        background: var(--bg-2);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 7px 10px;
+        font-size: 12px;
+      }
+      .switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; cursor: pointer; }
+      .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+      .slider-t {
+        position: absolute; inset: 0; background: var(--slider-bg); border-radius: 22px;
+      }
+      .slider-t::before {
+        content: "";
+        position: absolute;
+        width: 16px; height: 16px; border-radius: 50%;
+        background: white; top: 3px; left: 3px; transition: transform 0.2s ease;
+      }
+      .switch input:checked + .slider-t { background: var(--copper); }
+      .switch input:checked + .slider-t::before { transform: translateX(18px); }
+
+      .hist-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .hist-name { font-size: 13px; font-weight: 700; }
+      .hist-time { font-size: 11px; color: var(--muted); margin-top: 3px; }
+      .hist-src {
+        font-size: 10px;
+        font-weight: 800;
+        color: var(--copper);
+        border: 1px solid rgba(224,138,74,0.45);
+        border-radius: 999px;
+        padding: 3px 8px;
+      }
+
+      .scan-panel {
+        width: 100%;
+        background: var(--bg-2);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 28px 18px;
+        text-align: center;
+        margin: auto 0 24px;
+      }
+      .spin {
+        width: 36px; height: 36px; margin: 0 auto 12px;
+        border: 3px solid var(--slider-bg); border-top-color: var(--copper);
+        border-radius: 50%; animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .step-text { font-weight: 700; }
+
+      .beta { color: var(--danger); font-weight: 800; }
+      .set-row.disabled .set-label { opacity: 0.5; }
+    </style>
+</head>
+<body>
+  <header class="chrome">
+    <div class="chrome-top">
+      <div class="brand">
+        <div class="brand-row">
+          <img class="mark" src="icon48.png" alt="Rust Drops logo">
+          <h1>Rust Drops</h1>
+          <span class="source-chip" id="sourceChip">Twitch</span>
+        </div>
+        <div class="kicker" id="updatedAgo">Scan to load inventory and live campaigns</div>
+      </div>
+      <div class="scan-col">
+        <div class="round-timer" id="roundCountdown"></div>
+        <button class="scan-btn" id="scanBtn">Scan</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div class="tabs">
+      <button type="button" class="tab active" data-tab="live">Live <span class="badge" id="liveCount">0</span></button>
+      <button type="button" class="tab" data-tab="unclaimed">Open <span class="badge" id="unclaimedCount">0</span></button>
+      <button type="button" class="tab" data-tab="claimed">Claimed <span class="badge" id="claimedCount">0</span></button>
+    </div>
+    <div class="search-wrap">
+      <input class="search-input" id="dropSearch" type="search" placeholder="Filter by item or streamer" autocomplete="off" spellcheck="false">
+    </div>
+  </div>
+
+  <main class="content" id="content">
+    <div class="empty-state">
+      <strong>Nothing loaded yet</strong>
+      Scan once to pull claimed items, live streamers, and drop progress.
+    </div>
+  </main>
+
+  <nav class="dock">
+    <button type="button" id="historyBtn" title="Claim history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="16" y2="17"></line></svg>
+      History
+    </button>
+    <button type="button" id="aboutBtn" title="About">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+      About
+    </button>
+    <button type="button" id="settingsBtn" title="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 01.33 5.42 2 2 0 11-2-2v-.33a4 4 0 00-.53-2.53l-.06-.06a.5.5 0 00-.7.06 4 4 0 11-1.64-2 4 4 0 012.53-5.33l.34-.1a.5.5 0 01.68.53 1.68 1.68 0 01-.3 4.71A2 2 0 1119.4 15z"></path></svg>
+      Settings
+    </button>
+  </nav>
+    </button>
+  </nav>
+
+  <div class="overlay" id="scanOverlay" style="display:none">
+    <div class="scan-panel">
+      <div class="spin"></div>
+      <div class="step-text" id="stepText">Scanning…</div>
+    </div>
+  </div>
+
+  <div class="overlay" id="historyOverlay" style="display:none">
+    <div class="sheet">
+      <div class="sheet-head">
+        <h2>Claim history</h2>
+        <div class="sheet-actions">
+          <button class="danger-btn" id="historyClear">Clear</button>
+          <button class="ghost" id="historyCloseBtn">Close</button>
+        </div>
+      </div>
+      <div id="historyList"></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="aboutOverlay" style="display:none">
+    <div class="sheet">
+      <div class="sheet-head">
+        <h2>Rust Drops Companion</h2>
+        <button class="ghost" id="aboutCloseBtn">Close</button>
+      </div>
+      <div class="about-copy">
+        <p><b>Version:</b> <span id="aboutVersion"></span></p>
+        <p><b>Created by:</b> john503</p>
+        <p style="margin-top:10px;">Tracks claimed Rust drops, live streamers, and progress so you don’t have to hunt through Twitch pages.</p>
+      </div>
+      <button class="primary-btn" id="bugBtn" style="margin-top:14px;">Copy diagnostics</button>
+      <textarea id="bugText" class="bug-text"></textarea>
+    </div>
+  </div>
+
+  <div class="overlay" id="settingsOverlay" style="display:none">
+    <div class="sheet">
+      <div class="sheet-head">
+        <h2>Settings</h2>
+        <button class="ghost" id="settingsCloseBtn">Close</button>
+      </div>
+      <div class="settabs">
+        <button class="settab active" data-settab="notif">Alerts</button>
+        <button class="settab" data-settab="auto">Automation</button>
+        <button class="settab" data-settab="adv">Advanced</button>
+        <button class="settab" data-settab="accounts">Accounts</button>
+      </div>
+
+      <div id="panel-notif">
+        <div class="settings-section">
+          <div class="settings-group-title">Tracked stream goes live</div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="liveEnabled"><span class="slider-t"></span></label>
+            <span class="set-label">Desktop notification</span>
+          </div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="liveSound"><span class="slider-t"></span></label>
+            <span class="set-label">Play sound</span>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Sound</span>
+            <select class="sound-select" id="liveSoundId">
+              <option value="0">Classic beep</option>
+              <option value="1">Double beep</option>
+              <option value="2">Chime</option>
+              <option value="3">Siren</option>
+              <option value="4">Alert</option>
+              <option value="5">Soft chime</option>
+              <option value="6">Warm bell</option>
+              <option value="7">Double pulse</option>
+            </select>
+          </div>
+          <button class="primary-btn" id="liveTest">Test live alert</button>
+        </div>
+        <div class="settings-section">
+          <div class="settings-group-title">Drop reaches 100%</div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="readyEnabled"><span class="slider-t"></span></label>
+            <span class="set-label">Desktop notification</span>
+          </div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="readySound"><span class="slider-t"></span></label>
+            <span class="set-label">Play sound</span>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Sound</span>
+            <select class="sound-select" id="readySoundId">
+              <option value="0">Classic beep</option>
+              <option value="1">Double beep</option>
+              <option value="2">Chime</option>
+              <option value="3">Siren</option>
+              <option value="4">Alert</option>
+              <option value="5">Soft chime</option>
+              <option value="6">Warm bell</option>
+              <option value="7">Double pulse</option>
+            </select>
+          </div>
+          <button class="primary-btn" id="readyTest">Test ready alert</button>
+        </div>
+      </div>
+
+      <div id="panel-auto" style="display:none;">
+        <div class="settings-section">
+          <div class="settings-group-title">Automation</div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="autoClaim"><span class="slider-t"></span></label>
+            <span class="set-label">Auto-claim at 100%</span>
+          </div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="autoOpen"><span class="slider-t"></span></label>
+            <span class="set-label">Open streamer when a drop goes live</span>
+          </div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="autoWatch"><span class="slider-t"></span></label>
+            <span class="set-label">Auto-watch <span class="beta">(Beta)</span> — open live stream muted &amp; pinned in background</span>
+          </div>
+          <div class="set-row">
+            <span class="set-label" id="claimStatusText" style="font-size:12px">No auto-claim attempts yet</span>
+          </div>
+          <button class="primary-btn" id="claimNowBtn">Claim ready drops now</button>
+        </div>
+      </div>
+
+      <div id="panel-adv" style="display:none;">
+        <div class="settings-section">
+          <div class="settings-group-title">Theme</div>
+          <div class="set-row">
+            <span class="set-label">Mode</span>
+            <select class="sound-select" id="appearance" style="max-width:140px">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </div>
+          <div class="set-row"><span class="set-label" style="font-size:11px">Dark accent: <b>red</b> for Twitch/no round, <b>green</b> for Kick (auto).</span></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-group-title">Progress bar</div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="showPct"><span class="slider-t"></span></label>
+            <span class="set-label">Show percentage</span>
+          </div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="showTimeLeft"><span class="slider-t"></span></label>
+            <span class="set-label">Show time left (ETA)</span>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-group-title">Advanced</div>
+          <div class="set-row">
+            <label class="switch"><input type="checkbox" id="tabRecheck"><span class="slider-t"></span></label>
+            <span class="set-label">Accurate claimed checks (hidden tab)</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="panel-accounts" style="display:none;">
+        <div class="settings-section">
+          <div class="settings-group-title">Saved accounts</div>
+          <div id="accountsList"></div>
+          <div class="settings-group-title" style="margin-top:12px">Add Twitch account</div>
+          <div class="set-row">
+            <input class="sound-select" id="accountLabel" placeholder="Name (optional)" style="max-width:200px">
+          </div>
+          <div class="set-row">
+            <textarea id="accountToken" placeholder="Paste your Twitch auth-token cookie value" rows="3" style="width:100%;background:var(--bg-2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;font:11px/1.3 Consolas,monospace;resize:vertical"></textarea>
+          </div>
+          <button class="primary-btn" id="accountAddBtn">Add account</button>
+          <div class="set-row" style="margin-top:8px">
+            <span class="set-label" style="font-size:11px">Saved accounts use their own OAuth token for auto-claim &amp; inventory refresh, independent of the browser login. Clear all cookies or pick an account below.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="drop-filter.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
