@@ -69,4 +69,4 @@ adapt it; please share what you tested and on which campaign or data source when
 
 This project is licensed under the [MIT License](./LICENSE).
 
-**Created by:** [john503](https://github.com/Oajohn)
+**Created by:** [john503](https://github.com/j0hn503)
