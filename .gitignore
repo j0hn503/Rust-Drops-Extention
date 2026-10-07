@@ -1,8 +1,20 @@
 # Dependencies
 node_modules/
 
+# Local environment and signing secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+*.keystore
+*.jks
+
 # Build output
 dist/
+rust-drops-companion-*.zip
 
 # Test coverage
 coverage/
@@ -10,6 +22,7 @@ coverage/
 # IDE
 .vscode/
 .idea/
+.kilo/
 *.swp
 *.swo
 *~
