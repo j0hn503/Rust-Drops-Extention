@@ -1,96 +1,72 @@
 # Rust Drops Companion
 
-Chrome extension that tracks Rust Twitch drops: claimed, live now (per streamer), unclaimed, and progress.
+A Chrome extension for keeping track of Rust Twitch Drops, campaign progress, and live streamers.
+
+> **Experimental project:** This extension was built primarily as an experiment in AI coding agents and
+> vibe coding. The author does not have a JavaScript background, and roughly 90% of the project was
+> AI-assisted. It is shared openly for people who want to try it, test it, or make improvements.
 
 ## Features
 
-- Tracks Rust drops from twitch.facepunch.com
-- Fallback to kick.facepunch.com when Twitch has no drops
-- Shows live streamers and their status
-- Tracks drop progress
-- Auto-claim drops via API
-- Notifications for live drops and ready-to-claim drops
-- Dynamic theming: Purple for Twitch, Green for Kick
+- View claimed and unclaimed drops and track drop progress.
+- See live streamers associated with drops.
+- Refresh Rust Drops data from the Facepunch campaign pages.
+- Receive notifications for live drops and drops ready to claim.
+- Switch between Twitch and Kick data sources, with source-specific colors.
+
+## Testing status
+
+- **Twitch:** The integration was tested and worked well during Round 53, the **Rust Isles** campaign.
+  Twitch and Facepunch can change their pages or APIs, so this does not guarantee that it will keep
+  working in future campaigns.
+- **Kick:** The integration is present but has not been tested.
+- **Advanced Settings and Accounts tabs:** These features have not been fully tested.
+- The automated tests cover drop filtering and name matching; they do not verify live service
+  integrations.
+
+Use the extension as an experimental project, and check that it behaves as expected before relying on
+it.
+
+## Install for testing
+
+### Requirements
+
+- Google Chrome
+- Node.js 18 or later and npm
+
+### Build and load
+
+1. Clone or download this repository.
+2. In a terminal opened in the project folder, install the development dependencies and build:
+
+   ```bash
+   npm install
+   npm run build
+   ```
+
+3. Open `chrome://extensions` in Chrome.
+4. Turn on **Developer mode**.
+5. Select **Load unpacked** and choose the generated `dist` folder.
+
+To run the automated tests, use:
+
+```bash
+npm test
+```
+
+Other project checks are available with `npm run lint`, `npm run format:check`, and `npm run validate`.
 
 ## Development
 
-### Setup
+The extension uses the Chrome Extension Manifest V3. Its main runtime files are in the repository
+root; `scripts/build.js` copies the files needed by the extension into `dist/`. The `tests/` folder
+contains the automated tests.
 
-```bash
-npm install
-```
-
-### Available Scripts
-
-- `npm run lint` - Run ESLint
-- `npm run lint:fix` - Fix ESLint issues automatically
-- `npm run format` - Format code with Prettier
-- `npm run format:check` - Check code formatting
-- `npm run test` - Run tests
-- `npm run build` - Build extension to `dist/` folder
-- `npm run validate` - Run lint, format check, and tests
-
-### Loading the Extension
-
-1. Run `npm run build` to create the `dist` folder
-2. Open Chrome and navigate to `chrome://extensions/`
-3. Enable "Developer mode"
-4. Click "Load unpacked"
-5. Select the `dist` folder
-
-## Recent Improvements
-
-### 1. Enhanced Drop Differentiation
-- Added `dropInstanceID` matching for exact identification
-- Added campaign ID differentiation
-- Added image URL comparison
-- Added streamer count differentiation
-- Improved handling of same-name drops with different variants
-
-### 2. Kick Integration
-- Added kick.facepunch.com as fallback source
-- Automatically switches to Kick when Twitch has no drops
-- Tracks data source in scan results
-- Dynamic UI theming based on source
-
-### 3. Dynamic UI Theming
-- CSS variables for easy theme switching
-- Automatic theme updates based on drop source
-- Smooth transitions between themes
-- Purple theme for Twitch drops
-- Green theme for Kick drops
-
-### 4. Development Tooling
-- Added ESLint for code quality
-- Added Prettier for code formatting
-- Added Jest for testing
-- Added build script for extension packaging
-- Added pre-commit validation script
-
-### 5. Testing
-- Added test suite for name matching logic
-- Tests for normalization, tokenization, and fuzzy matching
-- Easy to extend with more tests
-
-## File Structure
-
-```
-twitch-rust/
-├── manifest.json          # Chrome extension manifest
-├── background.js          # Service worker (main logic)
-├── popup.html             # Popup UI
-├── popup.js               # Popup logic
-├── content_*.js           # Content scripts for Twitch pages
-├── beep.html/js           # Sound playback
-├── icon*.png              # Extension icons
-├── __tests__/             # Test files
-├── scripts/               # Build scripts
-├── package.json           # NPM configuration
-├── .eslintrc.json         # ESLint configuration
-├── .prettierrc.json       # Prettier configuration
-└── jest.config.js         # Jest configuration
-```
+Contributions, testing, bug reports, and improvements are welcome. Feel free to fork the project and
+adapt it; please share what you tested and on which campaign or data source when reporting results.
 
 ## License
 
-Created by john503
+This project is licensed under the [MIT License](./LICENSE).
+
+**Created by:** [john503](https://github.com/Oajohn)
