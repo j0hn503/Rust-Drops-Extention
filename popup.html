@@ -396,6 +396,16 @@
         line-height: 1.55;
       }
       .empty-state strong { color: var(--ink); display: block; font-size: 15px; margin-bottom: 6px; }
+      .campaign-warning {
+        margin: 0 14px 8px;
+        padding: 9px 11px;
+        border: 1px solid rgba(255, 123, 114, 0.45);
+        border-radius: 9px;
+        color: #ff9c94;
+        background: rgba(255, 123, 114, 0.08);
+        font-size: 11px;
+        line-height: 1.4;
+      }
 
       .dock {
         display: grid;
@@ -585,9 +595,9 @@
   </header>
 
   <div class="toolbar">
-    <div class="tabs">
+    <div class="tabs" style="display:none">
       <button type="button" class="tab active" data-tab="live">Live <span class="badge" id="liveCount">0</span></button>
-      <button type="button" class="tab" data-tab="unclaimed">Open <span class="badge" id="unclaimedCount">0</span></button>
+      <button type="button" class="tab" data-tab="unclaimed">Not claimed <span class="badge" id="unclaimedCount">0</span></button>
       <button type="button" class="tab" data-tab="claimed">Claimed <span class="badge" id="claimedCount">0</span></button>
     </div>
     <div class="search-wrap">

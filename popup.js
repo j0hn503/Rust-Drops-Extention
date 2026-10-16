@@ -6,6 +6,7 @@ var _appearance = "dark";
 var _accounts = [];
 var _activeAccount = -1;
 var _claimStatus = null;
+var _lastActiveRound = null;
 
 function sendMsg(msg, cb) {
   try {
@@ -19,6 +20,16 @@ function sendMsg(msg, cb) {
 function on(id, fn) {
   var el = document.getElementById(id);
   if (el) el.addEventListener("click", fn);
+}
+
+function migrateClaimStatus(scan) {
+  if (!scan || scan.claimStatusVersion >= 2 || !Array.isArray(scan.drops)) return scan;
+  for (var i = 0; i < scan.drops.length; i++) {
+    scan.drops[i].claimed = !!scan.drops[i].facepunchClaimed;
+  }
+  scan.claimStatusVersion = 2;
+  chrome.storage.local.set({ lastScan: scan });
+  return scan;
 }
 
 document.addEventListener("DOMContentLoaded", function () {
@@ -90,7 +101,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
   chrome.storage.onChanged.addListener(function (changes, area) {
     if (area === "storage" && changes.lastScan && changes.lastScan.newValue) {
-      currentData = changes.lastScan.newValue;
+      currentData = migrateClaimStatus(changes.lastScan.newValue);
       updateTheme(currentData.source);
       updateCounts();
       render();
@@ -101,11 +112,12 @@ document.addEventListener("DOMContentLoaded", function () {
 
   // load cached scan + resume overlay if a scan is still running
   chrome.storage.local.get(["lastScan", "scanState"], function (data) {
+    syncTabVisibility();
     loadDisplayOptions();
     loadAccounts();
     loadClaimStatus();
     if (data.lastScan && data.lastScan.drops) {
-      currentData = data.lastScan;
+      currentData = migrateClaimStatus(data.lastScan);
       updateTheme(currentData.source);
       updateCounts();
       render();
@@ -137,6 +149,7 @@ function seedPreview() {
   }
   currentData = {
     source: "twitch",
+    campaignLive: true,
     campaignEndTs: Date.now() + 6.8 * 3600000,
     drops: [
       {
@@ -257,6 +270,8 @@ function pollScan() {
       if (st.state === "error") { showError(st.message || "Scan failed", []); return; }
       if (st.state === "done" && st.result) {
         if (st.result.error && (!st.result.drops || st.result.drops.length === 0)) {
+          currentData = st.result;
+          syncTabVisibility();
           showError(st.result.error, st.result.debug);
           return;
         }
@@ -270,6 +285,8 @@ function pollScan() {
 }
 
 function showError(msg, debug) {
+  var tabs = document.querySelector(".tabs");
+  if (tabs) tabs.style.display = "none";
   var html = "<div class='empty-state'><p style='color:#ff7b72;font-weight:bold;'>" + escapeHtml(msg) + "</p>";
   if (debug && debug.length) {
     var txt = debug.join("\n");
@@ -296,9 +313,26 @@ function escapeHtml(s) {
 
 function updateCounts() {
   var drops = (currentData && currentData.drops) || [];
-  document.getElementById("liveCount").textContent = drops.filter(function (d) { return !d.claimed && d.live; }).length;
+  document.getElementById("liveCount").textContent = drops.filter(function (d) { return d.live; }).length;
   document.getElementById("unclaimedCount").textContent = drops.filter(function (d) { return !d.claimed; }).length;
   document.getElementById("claimedCount").textContent = drops.filter(function (d) { return d.claimed; }).length;
+  syncTabVisibility();
+}
+
+function hasActiveRustRound() {
+  if (!currentData) return false;
+  var drops = currentData.drops || [];
+  if (!drops.length) return false;
+  var now = Date.now();
+  if (currentData.campaignStartTs && currentData.campaignStartTs > now) return false;
+  if (currentData.campaignEndTs && currentData.campaignEndTs <= now) return false;
+  return !!currentData.campaignStartTs || !!currentData.campaignLive;
+}
+
+function syncTabVisibility() {
+  var wrap = document.querySelector(".tabs");
+  if (!wrap) return;
+  wrap.style.display = hasActiveRustRound() ? "grid" : "none";
 }
 
 function thumbHtml(d) {
@@ -320,19 +354,38 @@ function emptyHtml(title, body) {
 }
 
 function render() {
+  syncTabVisibility();
   var container = document.getElementById("content");
   container.classList.toggle("inventory", currentTab === "claimed");
+  var notice = currentData && currentData.campaignsError
+    ? "<div class='campaign-warning' role='status'>" + escapeHtml(currentData.campaignsError) + "</div>"
+    : "";
   if (!currentData || !currentData.drops) {
-    container.innerHTML = emptyHtml("Nothing loaded yet", "Hit Scan to pull claimed items, live streamers, and drop progress.");
+    container.innerHTML = notice + emptyHtml("Nothing loaded yet", "Hit Scan to check for the Rust campaign and load drop progress.");
     return;
   }
   var drops = currentData.drops;
+  if (currentData.error && drops.length === 0) {
+    container.innerHTML = notice + emptyHtml("Rust drops unavailable", escapeHtml(currentData.error));
+    return;
+  }
+  if (currentData.campaignStartTs && currentData.campaignStartTs > Date.now()) {
+    container.innerHTML = notice + emptyHtml("Rust drops start soon", "Starts in " + formatCountdown(currentData.campaignStartTs - Date.now()) + ".");
+    return;
+  }
+  if (!hasActiveRustRound()) {
+    var status = currentData.campaignEndTs && currentData.campaignEndTs <= Date.now()
+      ? "This Rust round has ended."
+      : "The Rust round has not started yet.";
+    container.innerHTML = notice + emptyHtml("Rust drops are not live", status);
+    return;
+  }
   var list = [], emptyTitle = "", emptyBody = "";
 
   if (currentTab === "live") {
-    list = drops.filter(function (d) { return !d.claimed && d.live; });
-    emptyTitle = "Nobody live for unclaimed drops";
-    emptyBody = "Check Open for progress, or wait for a tracked streamer.";
+    list = drops.filter(function (d) { return d.live; });
+    emptyTitle = "No tracked Rust-drop streamers are live";
+    emptyBody = "Check Not claimed for progress, or wait for a tracked streamer.";
   } else if (currentTab === "unclaimed") {
     list = drops.filter(function (d) { return !d.claimed; });
     emptyTitle = "All caught up";
@@ -381,7 +434,7 @@ function renderCard(d) {
   html += "<div class='drop-name'>" + escapeHtml(d.displayName || d.name) + "</div>";
   html += "<div class='drop-meta'>";
   if (d.claimed) html += "<span class='tag tag-claimed'>Claimed</span>";
-  if (!d.claimed && d.live) html += "<span class='tag tag-live'>Live now</span>";
+  if (d.live) html += "<span class='tag tag-live'>Live now</span>";
   if (!d.claimed && !d.live && !d.isGeneral) html += "<span class='tag'>Offline</span>";
   if (d.isGeneral) html += "<span class='tag'>Any Rust stream</span>";
   if (d.hours) html += "<span class='tag'>" + escapeHtml(d.hours) + "</span>";
@@ -479,16 +532,34 @@ function collectBugs() {
 // ---------- round countdown in header ----------
 function refreshStatusLine() { renderStatusLine(); }
 
-function updateRoundCountdown() {
-  var el = document.getElementById("roundCountdown");
-  if (!el) return;
-  if (!currentData || !currentData.campaignEndTs) { el.textContent = ""; return; }
-  var ms = currentData.campaignEndTs - Date.now();
-  if (ms <= 0) { el.textContent = "round ended"; el.style.color = "#ff7b72"; return; }
+function formatCountdown(ms) {
+  if (ms <= 0) return "now";
   var d = Math.floor(ms / 86400000);
   var h = Math.floor(ms % 86400000 / 3600000);
   var m = Math.floor(ms % 3600000 / 60000);
-  el.textContent = "Ends in " + (d > 0 ? d + "d " : "") + h + "h " + m + "m";
+  return (d > 0 ? d + "d " : "") + h + "h " + m + "m";
+}
+
+function updateRoundCountdown() {
+  var el = document.getElementById("roundCountdown");
+  if (!el) return;
+  var active = hasActiveRustRound();
+  if (_lastActiveRound !== active) {
+    var changed = _lastActiveRound !== null;
+    _lastActiveRound = active;
+    syncTabVisibility();
+    if (changed) render();
+  }
+  if (currentData && currentData.campaignStartTs && currentData.campaignStartTs > Date.now()) {
+    var msStart = currentData.campaignStartTs - Date.now();
+    el.textContent = "Starts in " + formatCountdown(msStart);
+    el.style.color = "";
+    return;
+  }
+  if (!currentData || !currentData.campaignEndTs) { el.textContent = ""; return; }
+  var ms = currentData.campaignEndTs - Date.now();
+  if (ms <= 0) { el.textContent = "round ended"; el.style.color = "#ff7b72"; return; }
+  el.textContent = "Ends in " + formatCountdown(ms);
   el.style.color = "";
 }
 

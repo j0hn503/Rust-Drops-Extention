@@ -28,19 +28,19 @@ async function scrollToBottom() {
 
 const NON_CHANNEL = ["directory","drops","settings","inventory","downloads","p","subscriptions","wallet","friends","messages","creatordashboard","moderator"];
 
-function extractCampaigns() {
+function extractCampaigns(root) {
   const drops = [];
   const seen = new Set();
-  const imgs = Array.from(document.querySelectorAll('img[src*="/REWARD/"]'));
+  const imgs = root ? Array.from(root.querySelectorAll('img[src*="/REWARD/"]')) : [];
 
   imgs.forEach((img) => {
-    const name = (img.getAttribute("alt") || "").trim();
+    const name = (img.getAttribute("alt") || "").replace(/^Drop image for\s+/i, "").trim();
     if (!name || seen.has(name)) return;
-    if (!/rust|rustoria/i.test(name)) return;
 
     // smallest ancestor that also contains a <strong> = the campaign block
     let block = img.parentElement;
     for (let d = 0; d < 9 && block; d++) {
+      if (root && !root.contains(block)) { block = null; break; }
       if (block.querySelector && block.querySelector("strong")) break;
       block = block.parentElement;
     }
@@ -50,7 +50,7 @@ function extractCampaigns() {
     // progress: role="progressbar" aria values, or % / fraction text near the card
     let percent = null;
     let pnode = img.parentElement;
-    for (let d = 0; d < 9 && pnode && percent === null; d++) {
+    for (let d = 0; d < 9 && pnode && percent === null && (!root || root.contains(pnode)); d++) {
       const pb = pnode.querySelector ? pnode.querySelector('[role="progressbar"]') : null;
       if (pb) {
         const now = parseFloat(pb.getAttribute("aria-valuenow") || "");
@@ -89,9 +89,7 @@ function extractCampaigns() {
   return { drops: drops };
 }
 
-// The Rust campaign list is a COLLAPSED accordion - rewards are not in the DOM
-// until clicked. Find the header by TEXT (stable across redesigns) and click it.
-function clickRustAccordion() {
+function findRustAccordion() {
   const els = Array.from(document.querySelectorAll("p, strong, h1, h2, h3, span, div"));
   for (const el of els) {
     const own = (el.childNodes.length && el.textContent || "").replace(/\s+/g, " ").trim();
@@ -99,40 +97,70 @@ function clickRustAccordion() {
     if (own === "Rust" || (own.startsWith("Rust") && el.parentElement && /facepunch/i.test(el.parentElement.textContent || ""))) {
       const clickable = el.closest("button, [role='button'], [role='heading']") ||
                         (el.parentElement && el.parentElement.closest("button, [role='button'], [role='heading']"));
-      if (clickable) { clickable.click(); return true; }
+      if (clickable) return clickable;
     }
   }
   // fallback: any button whose text mentions Rust + Facepunch
   const btns = Array.from(document.querySelectorAll("button, [role='button']"));
   for (const b of btns) {
     const t = (b.innerText || "").replace(/\s+/g, " ");
-    if (/\bRust\b/.test(t) && /facepunch/i.test(t)) { b.click(); return true; }
+    if (/\bRust\b/.test(t) && /facepunch/i.test(t)) return b;
   }
-  return false;
+  return null;
+}
+
+function rustCampaignRoot(header) {
+  const controlledId = header && header.getAttribute("aria-controls");
+  if (controlledId) {
+    const controlled = document.getElementById(controlledId);
+    if (controlled) return controlled;
+  }
+  let node = header;
+  for (let d = 0; d < 8 && node; d++, node = node.parentElement) {
+    if (node.querySelector && node.querySelector('img[src*="/REWARD/"]')) return node;
+  }
+  return null;
+}
+
+function isAccordionExpanded(header) {
+  const expanded = header && header.getAttribute("aria-expanded");
+  if (expanded === "true") return true;
+  if (expanded === "false") return false;
+  const root = rustCampaignRoot(header);
+  if (root) {
+    if (root.hidden || root.getAttribute("aria-hidden") === "true") return false;
+    const style = window.getComputedStyle(root);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (root.querySelector('img[src*="/REWARD/"]')) return true;
+  }
+  return null;
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "extract") {
     (async () => {
-      // 1) click the Rust accordion (retry: it may re-render)
-      for (let i = 0; i < 3; i++) {
-        clickRustAccordion();
-        await sleepMs(1500);
-      }
-      // 2) expand lazy content
+      const header = findRustAccordion();
+      if (header && isAccordionExpanded(header) !== true) header.click();
+      await sleepMs(1500);
       await scrollToBottom();
-      // 3) one more click pass in case scroll collapsed/re-rendered headers
-      clickRustAccordion();
-      await sleepMs(1000);
-      let result = extractCampaigns();
-      // retry once if nothing found
-      if (result.drops.length === 0) {
-        await scrollToBottom();
-        clickRustAccordion();
+      let root = rustCampaignRoot(header);
+      let result = extractCampaigns(root);
+      if (result.drops.length === 0 && header && isAccordionExpanded(header) === false) {
+        header.click();
         await sleepMs(1500);
-        result = extractCampaigns();
+        await scrollToBottom();
+        root = rustCampaignRoot(header);
+        result = extractCampaigns(root);
       }
-      sendResponse({ ...result, url: location.href });
+      if (result.drops.length === 0) {
+        result.error = "Twitch has not listed a Rust category on the Drops Campaigns page yet.";
+      }
+      sendResponse({
+        ...result,
+        rustFound: !!header && result.drops.length > 0,
+        error: result.drops.length === 0 ? (result.error || "Twitch has not started the Rust category yet.") : null,
+        url: location.href
+      });
     })();
     return true;
   }

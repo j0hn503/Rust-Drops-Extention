@@ -74,20 +74,6 @@ function pickMatch(list, n) {
 }
 
 
-// claimed items from OLD events (other games/campaigns sharing generic item names
-// like "Furnace") must never mark a current-round drop - e.g. the false pair
-// "Rust Charity '26 Furnace -> Furnace"
-const OLD_EVENT_WORDS = ["charity", "rivals", "global", "warfare", "gta", "nutsack",
-                         "burntpeanut", "winter", "highway", "patrol"];
-function isOldEventClaim(name) {
-  const n = " " + norm(name) + " ";
-  for (const w of OLD_EVENT_WORDS) {
-    if (n.indexOf(w) !== -1) return true;
-  }
-  return false;
-}
-
-
 // for in-progress matching: same-name variants exist (general vs streamer cards).
 // the earnable campaign is the streamer one, so prefer candidates WITH streamers,
 // then ones that already carry progress, then first.
@@ -150,13 +136,16 @@ async function fetchKick() {
 }
 
 function parseFacepunch(html) {
-  const result = { campaign: null, campaignId: null, campaignLive: false, endText: null, loggedIn: false, drops: [], campaignEndTs: null };
+  const result = { campaign: null, campaignId: null, campaignLive: false, endText: null, loggedIn: false, drops: [], campaignStartTs: null, campaignEndTs: null };
 
   const titleM = html.match(/<h2 class="event-title">([\s\S]*?)<\/h2>/);
   if (titleM) result.campaign = decodeHtml(titleM[1].replace(/<[^>]+>/g, ""));
   result.campaignLive = /status-badge is-live/.test(html);
   const cdM = html.match(/setupCountdown\([^,]+,\s*(\d{13}),\s*(\d{13})\)/);
-  result.campaignEndTs = cdM ? Number(cdM[2]) : null;
+  if (cdM) {
+    result.campaignStartTs = Number(cdM[1]);
+    result.campaignEndTs = Number(cdM[2]);
+  }
   result.loggedIn = /class="avatar"/.test(html);
   const dateM = html.match(/class="date"[^>]*>([^<]+)<\/span>[\s\S]*?date-sep[\s\S]*?class="date"[^>]*>([^<]+)<\/span>/);
   if (dateM) result.endText = decodeHtml(dateM[2]);
@@ -201,7 +190,9 @@ function parseFacepunch(html) {
     const timeM = block.match(/class="drop-time"[\s\S]*?<span>([^<]+)<\/span>/);
     const imgM = block.match(/<img src="(https:\/\/files\.facepunch\.com\/[^"]+)"/);
     const badgeM = block.match(/<[^>]*drop-claimed-badge[^>]*>/);
-    const claimed = badgeM ? !/hidden/.test(badgeM[0]) : false;
+    const claimed = !!(badgeM &&
+      !/\b(hidden|d-none|invisible)\b/i.test(badgeM[0]) &&
+      !/display\s*:\s*none|aria-hidden\s*=\s*["']true/i.test(badgeM[0]));
 
     result.drops.push({
       name: name, campaign: result.campaign || "Rust Drops", campaignId: result.campaignId,
@@ -209,7 +200,7 @@ function parseFacepunch(html) {
       streamers: streamers, watchUrl: watchUrl || RUST_DIR,
       live: isLive, isGeneral: streamers.length === 0,
       hours: timeM ? decodeHtml(timeM[1]) : null,
-      claimed: claimed, pct: null, progress: null, extra: false
+      claimed: claimed, facepunchClaimed: claimed, pct: null, progress: null, extra: false
     });
   }
   // merge only true duplicates: same name AND same variant (general vs streamer).
@@ -223,6 +214,7 @@ function parseFacepunch(html) {
       if (d.streamers.length) { ex.streamers = ex.streamers.concat(d.streamers); ex.isGeneral = false; }
       ex.live = ex.live || d.live;
       ex.claimed = ex.claimed || d.claimed;
+      ex.facepunchClaimed = ex.facepunchClaimed || d.facepunchClaimed;
     } else { map[k] = d; drops.push(d); }
   }
   result.drops = drops;
@@ -279,8 +271,6 @@ async function carryPrevState(result) {
 
 // ---------- main scan ----------
 let scanning = false;
-let lastInvClaimed = [];
-
 function setStep(step) {
   return chrome.storage.local.set({ scanState: { state: "running", step: step, startedAt: Date.now() } });
 }
@@ -312,7 +302,8 @@ async function verifyLiveStreamers(streamerList) {
 
 async function doScan() {
   const result = { drops: [], campaign: null, campaignId: null, campaignLive: false, endText: null,
-                   facepunchLoggedIn: false, source: "twitch", debug: [], lastUpdated: new Date().toISOString() };
+                   facepunchLoggedIn: false, source: "twitch", debug: [], lastUpdated: new Date().toISOString(),
+                   campaignStartTs: null, campaignEndTs: null, claimStatusVersion: 2, error: null };
 
   // ONE tab: facepunch -> inventory -> campaigns -> rust directory, then auto-close
   await setStep("Opening twitch.facepunch.com ...");
@@ -327,6 +318,7 @@ async function doScan() {
     result.campaignLive = fp.campaignLive;
     result.endText = fp.endText;
     result.facepunchLoggedIn = fp.loggedIn;
+    result.campaignStartTs = fp.campaignStartTs;
     result.campaignEndTs = fp.campaignEndTs;
     result.drops = fp.drops;
     result.debug.push("facepunch: " + fp.drops.length + " drops, loggedIn=" + fp.loggedIn);
@@ -345,6 +337,7 @@ async function doScan() {
         result.campaignLive = kick.campaignLive;
         result.endText = kick.endText;
         result.facepunchLoggedIn = kick.loggedIn;
+        result.campaignStartTs = kick.campaignStartTs;
         result.campaignEndTs = kick.campaignEndTs;
         result.drops = kick.drops;
         result.source = "kick";
@@ -364,32 +357,16 @@ async function doScan() {
   };
 
   // B) inventory claimed
-  let invClaimedCount = 0;
   try {
     await setStep("Reading your Twitch inventory ...");
     await chrome.tabs.update(tab.id, { url: INV_URL, active: false }); tabLog("nav", INV_URL);
     await waitTabLoad(tab.id);
     const inv = await extractWithRetry(tab.id);
     const claimed = inv.claimed || [];
-    invClaimedCount = claimed.length;
-    let matched = 0;
-    for (const c of claimed) {
-      if (isOldEventClaim(c.name)) continue;
-      // same-name variants exist (general vs streamer "Large Wood Box"):
-      // one claimed inventory name must mark EVERY matching card, otherwise
-      // the second copy stays "not claimed" forever
-      const cands = result.drops.filter(d => nameMatches(d.name, c.name));
-      for (const d of cands) {
-        d.claimed = true; matched++;
-        if (norm(c.name) !== norm(d.name)) result.debug.push("CLAIM PAIR: " + c.name + " -> " + d.name);
-      }
-    }
-    lastInvClaimed = claimed;
     if (inv.inProgress && inv.inProgress.length) {
       result.debug.push("in-progress: " + inv.inProgress.map(p => p.name + " " + p.percent + "%").join(", "));
     }
-    result.debug.push("inventory: " + claimed.length + " claimed total, " + matched + " matched");
-    result.debug.push("claimed names: " + claimed.map(c => c.name).join(", "));
+    result.debug.push("inventory: " + claimed.length + " previously claimed items; not used to mark current-round drops");
     // in-progress items from inventory
     let prog = 0;
     const progNames = [];
@@ -410,6 +387,10 @@ async function doScan() {
     await chrome.tabs.update(tab.id, { url: CAMP_URL, active: false }); tabLog("nav", CAMP_URL);
     await waitTabLoad(tab.id);
     const camp = await extractWithRetry(tab.id);
+    if (camp.error && (!camp.drops || !camp.drops.length)) {
+      result.campaignsError = camp.error;
+      result.debug.push("campaigns: " + camp.error);
+    }
     const cdrops = camp.drops || [];
     let matched = 0;
     for (const cd of cdrops) {
@@ -435,7 +416,10 @@ async function doScan() {
       // non-current-campaign drops ignored: facepunch is the single catalog source
     }
     result.debug.push("campaigns: " + cdrops.length + " rust drops, " + matched + " matched to facepunch");
-  } catch (e) { result.debug.push("campaigns failed: " + e.message); }
+  } catch (e) {
+    result.campaignsError = "Could not read Twitch's Drops Campaigns page: " + e.message;
+    result.debug.push("campaigns failed: " + e.message);
+  }
 
   // (old "second pass" removed - it used an unfiltered claimed list and
   //  re-introduced old-event false matches like "Rust Charity '26 Furnace".
@@ -494,6 +478,11 @@ async function doScan() {
   result.debug.push("claimed tab: " + result.drops.filter(d => d.claimed).map(d => d.name).join(", "));
   result.debug.push("not-claimed: " + result.drops.filter(d => !d.claimed).map(d => d.name).join(", "));
   if (tab) { try { await chrome.tabs.remove(tab.id); tabLog("close", "scan-tab"); } catch (e) {} }
+  if (!result.drops.length && !result.campaignStartTs && !result.error) {
+    result.error = result.campaignsError || "Twitch has not listed a Rust category on the Drops Campaigns page yet.";
+    result.debug.push("campaigns: Twitch has not started the Rust category yet.");
+  }
+
   // same-name pairs: share the best (twitch reward) image so both cards look consistent
   const byNameImg = {};
   for (const d of result.drops) {
@@ -1344,21 +1333,9 @@ async function gqlInventory() {
     persistedErr: persistedErr
   };
 
-  const geName = (ge) => ge.name || (ge.benefit && ge.benefit.name) ||
-    (ge.benefitEdges && ge.benefitEdges[0] && ge.benefitEdges[0].benefit && ge.benefitEdges[0].benefit.name) ||
-    (ge.drop && ge.drop.name) || null;
-
   const drops = [];
-  // gameEventDrops = complete claimed benefits list (incl. campaigns that fully
-  // completed and disappeared from dropCampaignsInProgress)
-  for (const ge of (invR.gameEventDrops || [])) {
-    const n = geName(ge);
-    if (!n) continue;
-    drops.push({ id: ge.id, name: n, fromGE: true, isClaimed: true,
-      earnedMinutesWatched: 0, requiredMinutesWatched: 0,
-      game: { name: "Rust" }, campaign: { name: "claimed" } });
-  }
-  // in-progress campaigns with live per-drop minutes
+  // gameEventDrops is historical and not tied to the active campaign. Only
+  // campaign-specific self.isClaimed values are safe to use for current drops.
   for (const camp of (campaigns || [])) {
     for (const td of (camp.timeBasedDrops || [])) {
       const tdName = td.name || (td.benefitEdges && td.benefitEdges[0] && td.benefitEdges[0].benefit && td.benefitEdges[0].benefit.name) || null;
@@ -1378,24 +1355,19 @@ async function gqlInventory() {
 // claimed status + progress refresh via ONE hidden tab (no campaigns page = fast)
 async function mergeInventoryData(lastScan, inv, st) {
   const claimed = inv.claimed || [];
-  lastInvClaimed = claimed;
   let matched = 0;
-  const unmatched = [];
-  const pairs = [];
+  for (const d of lastScan.drops) d.claimed = !!d.facepunchClaimed;
   for (const c of claimed) {
-    if (isOldEventClaim(c.name)) continue; // old-event item: never marks a current drop
-    // mark ALL same-name variants (general + streamer copies of one item)
-    const cands = lastScan.drops.filter(d => nameMatches(d.name, c.name));
+    if (!c.name) continue;
+    const byInstance = c.dropInstanceID
+      ? lastScan.drops.find(d => d.dropInstanceID === c.dropInstanceID)
+      : null;
+    const cands = byInstance
+      ? [byInstance]
+      : lastScan.drops.filter(d => norm(d.name) === norm(c.name));
     for (const d of cands) {
       d.claimed = true; matched++;
-      // audit trail: record WHICH source name claimed WHICH drop (catches bad fuzzy matches)
-      if (norm(c.name) !== norm(d.name)) pairs.push(c.name + " -> " + d.name);
     }
-    if (!cands.length) unmatched.push(c.name);
-  }
-  if (st) {
-    st.unmatchedClaimed = unmatched.slice(0, 8).join(", ");
-    st.claimPairs = pairs.slice(0, 12);
   }
   const progNames = [];
   for (const p of (inv.inProgress || [])) {
@@ -1409,6 +1381,7 @@ async function mergeInventoryData(lastScan, inv, st) {
     }
   }
   await trackReady(lastScan, progNames);
+  lastScan.claimStatusVersion = 2;
   lastScan.lastUpdated = new Date().toISOString();
   await chrome.storage.local.set({ lastScan });
   st.ok = true;
@@ -1445,13 +1418,12 @@ async function updateClaimedAndProgress(allowTab) {
         if (!isRust) continue;
         const earned = gd.earnedMinutesWatched || 0;
         const required = gd.requiredMinutesWatched || 0;
-        if (gd.isClaimed) inv.claimed.push({ name: gd.name, fromGE: !!gd.fromGE });
+        if (gd.isClaimed) inv.claimed.push({ name: gd.name, dropInstanceID: gd.dropInstanceID || null });
         else if (required > 0 && earned >= required) inv.inProgress.push({ name: gd.name, percent: 100, dropInstanceID: gd.dropInstanceID || null });
         else if (required > 0 && earned > 0) inv.inProgress.push({ name: gd.name, percent: Math.min(99, Math.round(earned / required * 100)), dropInstanceID: gd.dropInstanceID || null });
       }
       st.source = "api";
       st.claimedSeen = inv.claimed.length;
-      st.claimedFromGE = inv.claimed.filter(c => c.fromGE).length;
       if (g.diag) {
         st.geCount = g.diag.geCount; st.campCount = g.diag.campCount;
         st.persisted = g.diag.persisted;
@@ -1481,10 +1453,6 @@ async function updateClaimedAndProgress(allowTab) {
         await waitTabLoad(tab.id);
         try { await chrome.tabs.reload(tab.id, { bypassCache: true }); await waitTabLoad(tab.id); } catch (e) {}
         const tabInv = await extractWithRetry(tab.id);
-        const alreadyClaimed = (n) => inv.claimed.some(c => nameMatches(c.name, n));
-        for (const c of (tabInv.claimed || [])) {
-          if (!alreadyClaimed(c.name)) inv.claimed.push({ name: c.name });
-        }
         if (!inv.inProgress.length) inv.inProgress = tabInv.inProgress || [];
         st.source = st.source ? st.source + "+tab" : "tab";
       } finally {
@@ -1504,7 +1472,7 @@ async function updateClaimedAndProgress(allowTab) {
   await chrome.storage.local.set({ updateStatus: st });
 }
 
-const BUILD_TAG = "5.30-" + Date.now();
+const BUILD_TAG = "5.33-" + Date.now();
 chrome.storage.local.set({ buildTag: BUILD_TAG });
 chrome.alarms.clearAll(() => {
   chrome.alarms.create("tick", { periodInMinutes: 20 / 60 });

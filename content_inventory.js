@@ -61,6 +61,10 @@ function nearInfo(img) {
   // walk ancestors: timestamp => claimed, progressbar/% => in progress
   let node = img, ago = null, percent = null;
   for (let d = 0; d < 9 && node; d++) {
+    const rewardImages = node.querySelectorAll
+      ? node.querySelectorAll('img[alt^="Drop image for "]')
+      : [];
+    if (rewardImages.length > 1) break;
     const text = node.innerText || "";
     if (ago === null) {
       const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
