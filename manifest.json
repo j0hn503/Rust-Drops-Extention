@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Rust Drops Companion",
-  "version": "5.33",
+  "version": "5.43",
   "description": "Tracks Rust Twitch drops: claimed, live now (per streamer), unclaimed, progress",
   "permissions": [
     "tabs",
@@ -47,6 +47,7 @@
         "https://www.twitch.tv/drops/inventory*"
       ],
       "js": [
+        "drop-filter.js",
         "content_inventory.js"
       ],
       "run_at": "document_idle"
@@ -56,6 +57,7 @@
         "https://www.twitch.tv/drops/campaigns*"
       ],
       "js": [
+        "drop-filter.js",
         "content_campaigns.js"
       ],
       "run_at": "document_idle"

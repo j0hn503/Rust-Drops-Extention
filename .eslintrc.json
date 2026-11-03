@@ -22,6 +22,15 @@
     "prefer-arrow-callback": "warn"
   },
   "globals": {
-    "chrome": "readonly"
+    "chrome": "readonly",
+    "importScripts": "readonly",
+    "dropMatchesQuery": "readonly",
+    "getLiveDropGroups": "readonly",
+    "isGeneralDrop": "readonly",
+    "parseProgressPercent": "readonly",
+    "calculateProgressPercent": "readonly",
+    "getRefreshCountdown": "readonly",
+    "pickProgressDrop": "readonly",
+    "isAutoClaimEligible": "readonly"
   }
 }

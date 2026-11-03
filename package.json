@@ -1,6 +1,6 @@
 {
   "name": "rust-drops-companion",
-  "version": "5.33.0",
+  "version": "5.43.0",
   "description": "Tracks Rust Twitch drops: claimed, live now (per streamer), unclaimed, progress",
   "scripts": {
     "lint": "eslint *.js",

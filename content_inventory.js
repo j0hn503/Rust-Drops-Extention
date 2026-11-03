@@ -1,8 +1,6 @@
 // content_inventory.js - runs on twitch.tv/drops/inventory
 const ALT_PREFIX = "Drop image for ";
 const TIME_AGO_RE = /^(just now|\d+\s+(second|minute|hour|day|week|month|year)s?\s+ago|yesterday)$/i;
-const PCT_RE = /(\d{1,3})\s*%/;
-const FRAC_RE = /(\d+)\s*\/\s*(\d+)/;
 
 function sleepMs(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -17,29 +15,16 @@ function scrollTargets() {
   return cands.slice(0, 3);
 }
 
-async function clickLoadMore() {
-  // claimed grid paginates behind a "Load More" button - click until gone
-  for (let i = 0; i < 15; i++) {
-    const btn = Array.from(document.querySelectorAll("button")).find((b) =>
-      /^load more/i.test((b.innerText || "").trim()) && b.offsetParent !== null);
-    if (!btn) break;
-    btn.click();
-    await sleepMs(1200);
-  }
-}
-
 async function scrollToBottom() {
-  await clickLoadMore(); // reveal all claimed cards first
   const targets = scrollTargets();
   let last = 0, stable = 0;
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 12; i++) {
     for (const t of targets) t.scrollTop = t.scrollHeight;
     window.scrollTo(0, document.body.scrollHeight);
-    await sleepMs(600);
+    await sleepMs(200);
     const h = Math.max(0, ...targets.map(t => t.scrollHeight));
-    if (h === last) { if (++stable >= 4) break; } else { stable = 0; last = h; }
+    if (h === last) { if (++stable >= 2) break; } else { stable = 0; last = h; }
   }
-  await sleepMs(1000);
 }
 
 function percentFromBar(node) {
@@ -72,13 +57,8 @@ function nearInfo(img) {
       if (hit) ago = hit;
     }
     if (percent === null) {
-      percent = percentFromBar(node);
-      if (percent === null) {
-        const fr = text.match(FRAC_RE);
-        const pc = text.match(PCT_RE);
-        if (fr && Number(fr[2]) > 0) percent = Math.round(Number(fr[1]) / Number(fr[2]) * 100);
-        else if (pc) percent = parseInt(pc[1], 10);
-      }
+      percent = parseProgressPercent(text);
+      if (percent === null) percent = percentFromBar(node);
     }
     if (ago && percent !== null) break;
     node = node.parentElement;
@@ -92,15 +72,14 @@ function nearInfo(img) {
 function extractInProgressBars() {
   const out = [];
   document.querySelectorAll('[role="progressbar"]').forEach((pb) => {
-    const now = parseFloat(pb.getAttribute("aria-valuenow") || "");
-    const max = parseFloat(pb.getAttribute("aria-valuemax") || "100");
-    if (isNaN(now) || now <= 0) return;
-    const pct = Math.min(100, Math.round(now / (max || 100) * 100));
-    if (pct >= 100 || pct <= 0) return;
     // cell = smallest ancestor that also contains an image
     let cell = pb.parentElement;
     for (let d = 0; d < 6 && cell; d++) { if (cell.querySelector && cell.querySelector("img")) break; cell = cell.parentElement; }
     if (!cell) return;
+    const pct = parseProgressPercent(cell.innerText) !== null
+      ? parseProgressPercent(cell.innerText)
+      : percentFromBar(cell);
+    if (pct === null || pct <= 0) return;
     let name = null;
     (cell.querySelectorAll("p") || []).forEach((p) => {
       if (name) return;
@@ -124,7 +103,7 @@ function extractAll() {
     if (!name || seen.has(name)) return;
     const info = nearInfo(img);
     if (info.ago) { seen.add(name); claimed.push({ name: name, image: img.src || "", ago: info.ago }); }
-    else if (info.percent !== null && info.percent < 100) {
+    else if (info.percent !== null && info.percent <= 100) {
       seen.add(name);
       inProgress.push({ name: name, image: img.src || "", percent: info.percent });
     }
@@ -136,9 +115,18 @@ function extractAll() {
   return { claimed: claimed, inProgress: inProgress };
 }
 
+async function waitForInventoryItems() {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (document.querySelector('img[alt^="Drop image for "], [role="progressbar"]')) return;
+    await sleepMs(300);
+  }
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "extract") {
     (async () => {
+      await scrollToBottom();
+      await waitForInventoryItems();
       await scrollToBottom();
       const data = extractAll(); // extract at bottom where all cards are loaded
       for (const t of scrollTargets()) t.scrollTop = 0;

@@ -144,10 +144,10 @@
         margin-top: 4px;
         font-size: 10px;
         color: var(--muted);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 250px;
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        max-width: 100%;
       }
       .source-chip {
         font-size: 9px;
@@ -288,6 +288,50 @@
         box-shadow: var(--shadow);
       }
       .drop-card:hover { border-color: rgba(224, 138, 74, 0.55); }
+      .general-bundle {
+        display: grid;
+        grid-template-columns: 62px 1fr;
+        align-items: start;
+        gap: 12px;
+        padding: 12px;
+        background: linear-gradient(135deg, var(--bg-2), var(--bg-3));
+        border: 1px solid var(--copper);
+        border-radius: 14px;
+        box-shadow: var(--shadow);
+      }
+      .general-bundle-icon {
+        display: grid;
+        place-items: center;
+        width: 58px;
+        height: 58px;
+        border-radius: 12px;
+        background: var(--watch-bg);
+        font-size: 34px;
+      }
+      .general-bundle-body { min-width: 0; }
+      .general-bundle-body p {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.4;
+      }
+      .general-bundle-body ul {
+        margin: 7px 0 0 16px;
+        color: var(--ink);
+        font-size: 11px;
+        line-height: 1.5;
+      }
+      .general-bundle-action {
+        margin-top: 9px;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: var(--live);
+        color: var(--live-ink);
+        font: 750 11px/1.2 "Segoe UI", sans-serif;
+        cursor: pointer;
+      }
+      .general-bundle-action:hover { filter: brightness(1.06); }
 
       .thumb,
       .thumb-fallback {
@@ -774,13 +818,6 @@
           <div class="set-row">
             <label class="switch"><input type="checkbox" id="showTimeLeft"><span class="slider-t"></span></label>
             <span class="set-label">Show time left (ETA)</span>
-          </div>
-        </div>
-        <div class="settings-section">
-          <div class="settings-group-title">Advanced</div>
-          <div class="set-row">
-            <label class="switch"><input type="checkbox" id="tabRecheck"><span class="slider-t"></span></label>
-            <span class="set-label">Accurate claimed checks (hidden tab)</span>
           </div>
         </div>
       </div>

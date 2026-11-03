@@ -23,12 +23,14 @@ function on(id, fn) {
 }
 
 function migrateClaimStatus(scan) {
-  if (!scan || scan.claimStatusVersion >= 2 || !Array.isArray(scan.drops)) return scan;
+  if (!scan || scan.claimStatusVersion >= 3 || !Array.isArray(scan.drops)) return scan;
   for (var i = 0; i < scan.drops.length; i++) {
-    scan.drops[i].claimed = !!scan.drops[i].facepunchClaimed;
+    scan.drops[i].claimed = false;
+    scan.drops[i].facepunchClaimed = false;
   }
-  scan.claimStatusVersion = 2;
+  scan.claimStatusVersion = 3;
   chrome.storage.local.set({ lastScan: scan });
+  sendMsg({ action: "forceUpdate" });
   return scan;
 }
 
@@ -90,6 +92,17 @@ document.addEventListener("DOMContentLoaded", function () {
     searchEl.addEventListener("input", function () {
       searchQuery = this.value;
       render();
+    });
+  }
+  var contentEl = document.getElementById("content");
+  if (contentEl) {
+    contentEl.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-open-rust-streams]");
+      if (button) {
+        sendMsg({ action: "openRustStreams" }, function (result) {
+          if (result && result.error) alert("Could not open Rust streams: " + result.error);
+        });
+      }
     });
   }
 
@@ -215,10 +228,9 @@ function renderStatusLine() {
     if (!el) return;
     updateRoundCountdown();
     if (!h.alarmHeartbeat) { el.textContent = ""; return; }
-    var tickAt = new Date(h.alarmHeartbeat.at).getTime();
-    var nextData = Math.max(0, 20 - Math.round((Date.now() - tickAt) / 1000));
-    var nextLive = Math.max(0, 60 - (Math.round((Date.now() - tickAt) / 1000) % 60));
-    el.textContent = "updating progress in " + nextData + "s | updating stream channels in " + nextLive + "s";
+    var countdown = getRefreshCountdown(h.alarmHeartbeat, Date.now(), 20);
+    if (!countdown) { el.textContent = ""; return; }
+    el.textContent = "Progress " + countdown.progress + "s · streams " + countdown.streams + "s";
     el.style.color = "#adadb8";
   });
 }
@@ -313,7 +325,9 @@ function escapeHtml(s) {
 
 function updateCounts() {
   var drops = (currentData && currentData.drops) || [];
-  document.getElementById("liveCount").textContent = drops.filter(function (d) { return d.live; }).length;
+  document.getElementById("liveCount").textContent = drops.filter(function (d) {
+    return d.live || (isGeneralDrop(d) && !d.claimed);
+  }).length;
   document.getElementById("unclaimedCount").textContent = drops.filter(function (d) { return !d.claimed; }).length;
   document.getElementById("claimedCount").textContent = drops.filter(function (d) { return d.claimed; }).length;
   syncTabVisibility();
@@ -380,11 +394,13 @@ function render() {
     container.innerHTML = notice + emptyHtml("Rust drops are not live", status);
     return;
   }
-  var list = [], emptyTitle = "", emptyBody = "";
+  var list = [], generalDrops = [], emptyTitle = "", emptyBody = "";
 
   if (currentTab === "live") {
-    list = drops.filter(function (d) { return d.live; });
-    emptyTitle = "No tracked Rust-drop streamers are live";
+    var liveGroups = getLiveDropGroups(drops);
+    list = liveGroups.tracked;
+    generalDrops = liveGroups.general;
+    emptyTitle = "No Rust drops are live";
     emptyBody = "Check Not claimed for progress, or wait for a tracked streamer.";
   } else if (currentTab === "unclaimed") {
     list = drops.filter(function (d) { return !d.claimed; });
@@ -397,21 +413,38 @@ function render() {
   }
 
   list = list.filter(function (d) { return dropMatchesQuery(d, searchQuery); });
-  if (searchQuery.trim() && list.length === 0) {
+  generalDrops = generalDrops.filter(function (d) { return dropMatchesQuery(d, searchQuery); });
+  if (searchQuery.trim() && list.length === 0 && generalDrops.length === 0) {
     emptyTitle = "No matches";
     emptyBody = "Nothing in this tab for “" + escapeHtml(searchQuery.trim()) + "”.";
   }
 
-  if (list.length === 0) {
+  if (list.length === 0 && generalDrops.length === 0) {
     container.innerHTML = emptyHtml(emptyTitle, emptyBody);
     return;
   }
 
   var html = "";
+  if (currentTab === "live" && generalDrops.length) {
+    html += renderGeneralBundle(generalDrops);
+  }
   for (var i = 0; i < list.length; i++) {
     html += currentTab === "claimed" ? renderTile(list[i]) : renderCard(list[i]);
   }
   container.innerHTML = html;
+}
+
+function renderGeneralBundle(drops) {
+  var items = drops.map(function (drop) {
+    return "<li>" + escapeHtml(drop.name || drop.displayName || "Rust drop") + "</li>";
+  }).join("");
+  return "<article class='general-bundle'>" +
+    "<div class='general-bundle-icon' aria-hidden='true'>📦</div>" +
+    "<div class='general-bundle-body'><div class='drop-name'>General Drops</div>" +
+    "<p>" + drops.length + (drops.length === 1 ? " drop" : " drops") +
+    " available on eligible Rust streams.</p><ul>" + items + "</ul>" +
+    "<button type='button' class='general-bundle-action' data-open-rust-streams>" +
+    "Choose a stream with Drops Enabled</button></div></article>";
 }
 
 function renderTile(d) {
@@ -469,7 +502,8 @@ function renderCard(d) {
     }
     html += "</div>";
   } else if (!d.claimed && d.watchUrl && d.isGeneral) {
-    html += "<div class='streamer-row'><a class='watch-link live' href='" + d.watchUrl + "' target='_blank'>Browse Rust streams</a></div>";
+    html += "<div class='streamer-row'><a class='watch-link live' href='" +
+      d.watchUrl + "?rustDropsReminder=1' target='_blank'>Browse Rust streams · Drops Enabled</a></div>";
   }
   html += "</div></article>";
   return html;
@@ -582,9 +616,6 @@ function openSettings() {
     _barSettings = { showPct: s.showPct !== false, showTimeLeft: !!s.showTimeLeft };
     render();
     updateSubEnabled();
-    chrome.storage.local.get("extSettings", function (es) {
-      setChecked("tabRecheck", !!(es.extSettings && es.extSettings.tabRecheck));
-    });
     loadClaimStatus();
     loadAccounts();
     var o = document.getElementById("settingsOverlay");
@@ -633,14 +664,13 @@ function saveSettings() {
     appearance: (document.getElementById("appearance") || { value: _appearance }).value || "dark"
   };
   sendMsg({ action: "setNotifSettings", settings: settings });
-  chrome.storage.local.set({ extSettings: { tabRecheck: !!document.getElementById("tabRecheck").checked } });
   _barSettings = { showPct: settings.showPct, showTimeLeft: settings.showTimeLeft };
   if (settings.appearance !== _appearance) { applyAppearance(settings.appearance); }
   render();
 }
 
 function wireSettingsControls() {
-  var ids = ["liveEnabled", "liveSound", "liveSoundId", "readyEnabled", "readySound", "readySoundId", "tabRecheck", "autoClaim", "autoOpen", "autoWatch", "showPct", "showTimeLeft", "appearance"];
+  var ids = ["liveEnabled", "liveSound", "liveSoundId", "readyEnabled", "readySound", "readySoundId", "autoClaim", "autoOpen", "autoWatch", "showPct", "showTimeLeft", "appearance"];
   for (var i = 0; i < ids.length; i++) {
     var el = document.getElementById(ids[i]);
     if (!el) continue;

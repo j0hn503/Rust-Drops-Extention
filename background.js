@@ -5,10 +5,11 @@
 //  B) twitch.tv/drops/inventory - content_inventory.js: authoritative claimed list (alt-text)
 //  C) twitch.tv/drops/campaigns - content_campaigns.js: progress %, claimed, live channels
 
+importScripts("drop-filter.js");
+
 const FP_URL = "https://twitch.facepunch.com/";
 const KICK_URL = "https://kick.facepunch.com/";
 const INV_URL = "https://www.twitch.tv/drops/inventory";
-const CAMP_URL = "https://www.twitch.tv/drops/campaigns";
 const RUST_DIR = "https://www.twitch.tv/directory/category/rust";
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -74,15 +75,11 @@ function pickMatch(list, n) {
 }
 
 
-// for in-progress matching: same-name variants exist (general vs streamer cards).
-// the earnable campaign is the streamer one, so prefer candidates WITH streamers,
-// then ones that already carry progress, then first.
+// Inventory progress is name-only, so prefer the General Drop variant when
+// duplicate reward names exist; fall back to a streamer variant if needed.
 function pickProgressMatch(list, n) {
   const cands = list.filter(d => nameMatches(d.name, n));
-  if (!cands.length) return null;
-  const withStreamers = cands.filter(d => d.streamers && d.streamers.length);
-  const pool = withStreamers.length ? withStreamers : cands;
-  return pool.find(d => d._inProgress || (d.pct !== null && d.pct !== undefined)) || pool[0];
+  return pickProgressDrop(cands);
 }
 
 function sameDrop(a, b) {
@@ -224,27 +221,38 @@ function parseFacepunch(html) {
 // ---------- B/C) tab scraping with content scripts ----------
 async function waitTabLoad(tabId, timeoutMs) {
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("load timeout")), timeoutMs || 60000);
+    let settled = false;
+    const finish = (error) => {
+      if (settled) { return; }
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      if (error) { reject(error); }
+      else { resolve(); }
+    };
     const listener = (tid, info) => {
       if (tid === tabId && info.status === "complete") {
-        chrome.tabs.onUpdated.removeListener(listener);
-        clearTimeout(timer); resolve();
+        finish();
       }
     };
+    const timer = setTimeout(() => finish(new Error("load timeout")), timeoutMs || 60000);
     chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.get(tabId, tab => {
+      if (chrome.runtime.lastError) { finish(new Error(chrome.runtime.lastError.message)); }
+      else if (tab && tab.status === "complete") { finish(); }
+    });
   });
 }
 
 async function extractWithRetry(tabId) {
-  await sleep(3000);
   let lastErr = null;
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     try {
       const res = await chrome.tabs.sendMessage(tabId, { action: "extract" });
-      if (res) return res;
+      if (res) { return res; }
       lastErr = new Error("empty response");
     } catch (e) { lastErr = e; }
-    await sleep(1500);
+    await sleep(250);
   }
   throw lastErr || new Error("no response");
 }
@@ -300,19 +308,89 @@ async function verifyLiveStreamers(streamerList) {
   return out;
 }
 
+async function scanDropInfo() {
+  await setStep("Scan 1/3: loading Rust drop details ...");
+  const fp = parseFacepunch(await fetchFacepunch());
+  for (const drop of fp.drops) {
+    drop.claimed = false;
+    drop.facepunchClaimed = false;
+    drop.pct = null;
+    drop.progress = null;
+  }
+  return {
+    campaign: fp.campaign,
+    campaignId: fp.campaignId,
+    campaignLive: fp.campaignLive,
+    endText: fp.endText,
+    facepunchLoggedIn: fp.loggedIn,
+    campaignStartTs: fp.campaignStartTs,
+    campaignEndTs: fp.campaignEndTs,
+    drops: fp.drops
+  };
+}
+
+async function scanInventoryClaims() {
+  let tab = null;
+  try {
+    tab = await chrome.tabs.create({ url: INV_URL, active: false });
+    if (!tab || tab.id == null) throw new Error("Could not open Twitch inventory for claim verification.");
+    markOurTab(tab.id);
+    await waitTabLoad(tab.id, 60000);
+    return await extractWithRetry(tab.id);
+  } finally {
+    if (tab && tab.id != null) {
+      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+    }
+  }
+}
+
+async function scanProgress(catalogDrops, campaignId) {
+  await setStep("Scan 2/3: checking Twitch progress and claimed rewards ...");
+  const inventory = await gqlInventory();
+  const entries = (inventory.drops || []).filter(item =>
+    globalThis.isRustInventoryReward(item, catalogDrops, campaignId)
+  );
+  let pageInventory = { claimed: [], inProgress: [] };
+  let pageError = null;
+  try {
+    pageInventory = await scanInventoryClaims();
+  } catch (e) {
+    pageError = String(e && e.message || e);
+  }
+  return { entries, pageInventory, pageError, inventory };
+}
+
+async function scanStreams(drops) {
+  await setStep("Scan 3/3: checking Rust streams ...");
+  const allStreamers = [];
+  for (const drop of drops) {
+    if (drop.streamers) allStreamers.push(...drop.streamers);
+  }
+  const liveMap = await verifyLiveStreamers(allStreamers);
+  if (liveMap) {
+    for (const drop of drops) {
+      if (!drop.streamers) continue;
+      drop.live = false;
+      for (const streamer of drop.streamers) {
+        const login = ((streamer.url || "").split("/").filter(Boolean).pop() || streamer.name || "").toLowerCase();
+        if (login in liveMap) {
+          streamer.live = liveMap[login];
+          if (streamer.live) drop.live = true;
+        }
+      }
+    }
+  }
+  for (const drop of drops) drop.wasLive = !!drop.live;
+  return liveMap;
+}
+
 async function doScan() {
   const result = { drops: [], campaign: null, campaignId: null, campaignLive: false, endText: null,
                    facepunchLoggedIn: false, source: "twitch", debug: [], lastUpdated: new Date().toISOString(),
-                   campaignStartTs: null, campaignEndTs: null, claimStatusVersion: 2, error: null };
+                   campaignStartTs: null, campaignEndTs: null, claimStatusVersion: 3, error: null };
 
-  // ONE tab: facepunch -> inventory -> campaigns -> rust directory, then auto-close
-  await setStep("Opening twitch.facepunch.com ...");
-  let tab = null;
-  try { tab = await chrome.tabs.create({ url: FP_URL, active: false }); tabLog("open", FP_URL); markOurTab(tab.id); } catch (e) {}
   try {
-    const fpHtml = await fetchFacepunch();
-    await sleep(3500); // let you see the facepunch tab before switching
-    const fp = parseFacepunch(fpHtml);
+    const fp = await scanDropInfo();
     result.campaign = fp.campaign;
     result.campaignId = fp.campaignId;
     result.campaignLive = fp.campaignLive;
@@ -324,13 +402,87 @@ async function doScan() {
     result.debug.push("facepunch: " + fp.drops.length + " drops, loggedIn=" + fp.loggedIn);
   } catch (e) { result.debug.push("facepunch failed: " + e.message); }
 
-  // Fallback to Kick if Twitch has no drops
+  // Progress and claimed status are a separate scan from catalog discovery.
+  try {
+    const progressScan = await scanProgress(result.drops, result.campaignId);
+    const inventory = progressScan.inventory;
+    let progressCount = 0;
+    let claimedCount = 0;
+    const progNames = [];
+    const catalogDrops = result.drops;
+    const rustItems = progressScan.entries;
+    const currentDrops = catalogDrops;
+    // Facepunch badges can refer to an older event. Current-round claim
+    // state is only trustworthy when it comes from Twitch's account inventory.
+    if (rustItems.length) {
+      for (const item of rustItems) {
+        const candidates = catalogDrops.filter(d => nameMatches(d.name, item.name));
+        const exactCandidates = candidates.filter(d => norm(d.name) === norm(item.name));
+        const d = exactCandidates.length === 1
+          ? exactCandidates[0]
+          : exactCandidates.length === 0 && candidates.length === 1
+            ? candidates[0]
+            : null;
+        const reward = d || {
+          name: item.name,
+          image: null,
+          streamers: [],
+          watchUrl: RUST_DIR,
+          live: false,
+          isGeneral: true,
+          hours: null,
+          extra: false
+        };
+        if (!d) { currentDrops.push(reward); }
+        const pct = globalThis.calculateProgressPercent(item.earnedMinutesWatched, item.requiredMinutesWatched);
+        reward.campaign = (item.campaign && item.campaign.name) || result.campaign || "Rust Drops";
+        reward.campaignId = (item.campaign && item.campaign.id) || result.campaignId || null;
+        reward.dropInstanceID = item.dropInstanceID || reward.dropInstanceID || null;
+        reward.claimed = reward.claimed || !!item.isClaimed;
+        reward.facepunchClaimed = !!item.isClaimed;
+        reward.pct = reward.claimed ? 100 : pct;
+        reward.progress = reward.pct === null ? null : reward.pct + "%";
+        reward.isGeneral = !reward.streamers || reward.streamers.length === 0;
+        reward.watchUrl = reward.watchUrl || RUST_DIR;
+        result.campaign = result.campaign || (item.campaign && item.campaign.name) || "Rust Drops";
+        if (reward.claimed || (pct !== null && pct > 0)) { progressCount++; }
+        if (reward.claimed) { claimedCount++; }
+        if (!reward.claimed && pct !== null) { progNames.push(norm(reward.name)); }
+      }
+    }
+    const pageClaimedNames = new Set((progressScan.pageInventory.claimed || [])
+      .map(item => norm(item.name)).filter(Boolean));
+    for (const reward of currentDrops) {
+      if (pageClaimedNames.has(norm(reward.name)) && !reward.claimed) {
+        reward.claimed = true;
+        reward.facepunchClaimed = true;
+        reward.pct = 100;
+        reward.progress = "100%";
+        claimedCount++;
+        progressCount++;
+      }
+    }
+    if (rustItems.length || pageClaimedNames.size) {
+      result.drops = currentDrops;
+      result.campaignLive = true;
+    }
+    await carryPrevState(result);
+    await trackReady(result, progNames);
+    result.debug.push("current campaign inventory: " + (inventory.drops || []).length +
+      " rewards; Rust matched " + rustItems.length + ", claimed " + claimedCount +
+      ", inventory page claimed " + pageClaimedNames.size +
+      ", with progress or claimed " + progressCount);
+    if (inventory.error) { result.debug.push("Twitch inventory unavailable: " + inventory.error); }
+    if (progressScan.pageError) { result.debug.push("Twitch inventory page scan failed: " + progressScan.pageError); }
+  } catch (e) { result.debug.push("Twitch inventory failed: " + e.message); }
+
+  // Keep Twitch's live campaign results authoritative; only use Kick if neither
+  // Twitch source returned a Rust reward.
   if (result.drops.length === 0) {
-    await setStep("No Twitch drops, checking kick.facepunch.com ...");
+    await setStep("No Twitch Rust drops found, checking Kick ...");
     try {
       const kickHtml = await fetchKick();
-      await sleep(2000);
-      const kick = parseFacepunch(kickHtml); // Use same parser, structure is similar
+      const kick = parseFacepunch(kickHtml);
       if (kick.drops && kick.drops.length > 0) {
         result.campaign = kick.campaign;
         result.campaignId = kick.campaignId;
@@ -346,79 +498,6 @@ async function doScan() {
         result.debug.push("kick: no drops found");
       }
     } catch (e) { result.debug.push("kick failed: " + e.message); }
-  }
-
-  const byName = (n) => pickMatch(result.drops, n);
-  const byNameFor = (n, hasStreamers) => {
-    const cands = result.drops.filter(d => nameMatches(d.name, n));
-    if (!cands.length) return null;
-    if (hasStreamers) return cands.find(d => d.streamers && d.streamers.length) || cands[0];
-    return cands.find(d => !d.streamers || !d.streamers.length) || cands[0];
-  };
-
-  // B) inventory claimed
-  try {
-    await setStep("Reading your Twitch inventory ...");
-    await chrome.tabs.update(tab.id, { url: INV_URL, active: false }); tabLog("nav", INV_URL);
-    await waitTabLoad(tab.id);
-    const inv = await extractWithRetry(tab.id);
-    const claimed = inv.claimed || [];
-    if (inv.inProgress && inv.inProgress.length) {
-      result.debug.push("in-progress: " + inv.inProgress.map(p => p.name + " " + p.percent + "%").join(", "));
-    }
-    result.debug.push("inventory: " + claimed.length + " previously claimed items; not used to mark current-round drops");
-    // in-progress items from inventory
-    let prog = 0;
-    const progNames = [];
-    for (const p of (inv.inProgress || [])) {
-      const d = (result.drops.filter(x => nameMatches(x.name, p.name)).length > 1)
-        ? pickProgressMatch(result.drops, p.name)
-        : byName(p.name);
-       if (d) { d.pct = p.percent; d.progress = p.percent + "%"; prog++; progNames.push(norm(d.name)); }
-     }
-     await carryPrevState(result);
-     await trackReady(result, progNames);
-     if (prog) result.debug.push("inventory progress applied to " + prog + " drops");
-   } catch (e) { result.debug.push("inventory failed: " + e.message + " (log into twitch.tv)"); }
-
-  // C) campaigns progress + live channels
-  try {
-    await setStep("Opening campaigns and clicking Rust ...");
-    await chrome.tabs.update(tab.id, { url: CAMP_URL, active: false }); tabLog("nav", CAMP_URL);
-    await waitTabLoad(tab.id);
-    const camp = await extractWithRetry(tab.id);
-    if (camp.error && (!camp.drops || !camp.drops.length)) {
-      result.campaignsError = camp.error;
-      result.debug.push("campaigns: " + camp.error);
-    }
-    const cdrops = camp.drops || [];
-    let matched = 0;
-    for (const cd of cdrops) {
-      const d = byNameFor(cd.name, (cd.streamers || []).length > 0);
-      if (d) {
-        matched++;
-        // only fill in a missing image - never overwrite the card's own
-        // facepunch picture, or same-name variants (general vs streamer
-        // "Large Wood Box": box2.jpg vs box1.jpg) end up identical
-        if (cd.image && !d.image) d.image = cd.image;
-        if (cd.percent !== null && cd.percent !== undefined && d.pct === null) {
-          d.pct = cd.percent; d.progress = cd.percent + "%";
-        }
-        // merge streamer urls (campaigns page has exact links)
-        if (cd.streamers && cd.streamers.length) {
-          for (const cs of cd.streamers) {
-            const existing = (d.streamers || []).find(s => s.name.toLowerCase() === cs.name.toLowerCase());
-            if (existing) existing.url = cs.url;
-            else d.streamers.push({ name: cs.name, url: cs.url, live: false });
-          }
-        }
-      }
-      // non-current-campaign drops ignored: facepunch is the single catalog source
-    }
-    result.debug.push("campaigns: " + cdrops.length + " rust drops, " + matched + " matched to facepunch");
-  } catch (e) {
-    result.campaignsError = "Could not read Twitch's Drops Campaigns page: " + e.message;
-    result.debug.push("campaigns failed: " + e.message);
   }
 
   // (old "second pass" removed - it used an unfiltered claimed list and
@@ -446,41 +525,15 @@ async function doScan() {
     }
   }
 
-  // D) verify each streamer via Twitch API: live AND playing Rust (sidebar-safe)
   try {
-    await setStep("Checking who is live on Rust ...");
-    const allStreamers = [];
-    for (const d of result.drops) if (d.streamers) allStreamers.push(...d.streamers);
-    const liveMap = await verifyLiveStreamers(allStreamers);
-    if (liveMap) {
-      let on = 0, off = 0;
-      for (const d of result.drops) {
-        if (!d.streamers) continue;
-        d.live = false;
-        for (const s of d.streamers) {
-          const login = ((s.url || "").split("/").filter(Boolean).pop() || s.name || "").toLowerCase();
-          if (login in liveMap) {
-            s.live = liveMap[login];
-            if (s.live) d.live = true;
-            if (s.live) on++; else off++;
-          }
-        }
-      }
-      result.debug.push("api verified: " + on + " online on rust, " + off + " offline/other game");
-    } else {
-      result.debug.push("api verify unavailable, using facepunch live status");
-    }
+    const liveMap = await scanStreams(result.drops);
+    result.debug.push(liveMap ? "stream scan: Twitch verified" : "stream scan: API unavailable; using catalog status");
   } catch (e) { result.debug.push("live verify failed: " + e.message); }
-
-  // baseline for the monitor: currently-live drops are not "new"
-  for (const d of result.drops) d.wasLive = !!d.live;
 
   result.debug.push("claimed tab: " + result.drops.filter(d => d.claimed).map(d => d.name).join(", "));
   result.debug.push("not-claimed: " + result.drops.filter(d => !d.claimed).map(d => d.name).join(", "));
-  if (tab) { try { await chrome.tabs.remove(tab.id); tabLog("close", "scan-tab"); } catch (e) {} }
   if (!result.drops.length && !result.campaignStartTs && !result.error) {
-    result.error = result.campaignsError || "Twitch has not listed a Rust category on the Drops Campaigns page yet.";
-    result.debug.push("campaigns: Twitch has not started the Rust category yet.");
+    result.error = "No current Rust drops found in Twitch's live campaign inventory or Rust catalog.";
   }
 
   // same-name pairs: share the best (twitch reward) image so both cards look consistent
@@ -562,6 +615,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
+  if (request.action === "openRustStreams") {
+    chrome.tabs.create({
+      url: RUST_DIR + "?rustDropsReminder=1",
+      active: true
+    }, (tab) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ error: chrome.runtime.lastError.message });
+      } else {
+        sendResponse({ ok: true, tabId: tab && tab.id });
+      }
+    });
+    return true;
+  }
   if (request.action === "autoClaim") {
     startKeepalive();
     autoClaimFlow().then(res => {
@@ -578,7 +644,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.action === "setNotifSettings") {
-    chrome.storage.local.set({ notifSettings: request.settings || {} }, () => sendResponse({ ok: true }));
+    (async () => {
+      const { notifSettings, lastScan } = await chrome.storage.local.get(["notifSettings", "lastScan"]);
+      const settings = Object.assign({}, DEFAULT_NOTIF_SETTINGS, request.settings || {});
+      const changes = { notifSettings: settings };
+      if (!notifSettings?.autoClaim && settings.autoClaim && lastScan?.drops) {
+        for (const d of lastScan.drops) {
+          if (!d.claimed && d.pct >= 100) d._lastClaimTry = 0;
+        }
+        changes.lastScan = lastScan;
+      }
+      await chrome.storage.local.set(changes);
+      sendResponse({ ok: true });
+    })().catch((error) => sendResponse({ error: error.message }));
     return true;
   }
     if (request.action === "testSound") {
@@ -952,52 +1030,35 @@ async function updateBadge() {
 }
 
 
-// click the Claim button for a specific drop on the real inventory page
-// resolves true if a matching Claim button was found and clicked
-async function claimOnPage(dropName) {
-  const tab = await chrome.tabs.create({ url: INV_URL + "?cb=" + Date.now(), active: false });
-  markOurTab(tab.id);
-  tabLog("open", "claim-fallback");
-  try {
-    await waitTabLoad(tab.id);
-    try { await chrome.tabs.reload(tab.id, { bypassCache: true }); await waitTabLoad(tab.id); } catch (e) {}
-    await extractWithRetry(tab.id);
-    let res = null;
-    try { res = await chrome.tabs.sendMessage(tab.id, { action: "claimDropByName", name: dropName }); } catch (e) {}
-    return !!(res && res.clicked);
-  } finally {
-    try { await chrome.tabs.remove(tab.id); tabLog("close", "claim-fallback"); } catch (e) {}
-  }
-}
-
 async function monitorTick() {
+  if (scanning) return;
   withState(async () => {
+    if (scanning) return;
     const { lastScan } = await chrome.storage.local.get("lastScan");
     if (!lastScan || !lastScan.drops || !lastScan.drops.length) return;
 
     // fresh live data from facepunch (network only, no tab)
     const fp = parseFacepunch(await fetchFacepunch());
     for (const d of lastScan.drops) {
-      if (d.claimed) { d.live = false; continue; }
       const f = fp.drops.find(x => sameDrop(x, d));
       if (f && f.streamers && f.streamers.length) d.streamers = f.streamers;
     }
 
     // verify via twitch api: live AND playing rust
     const all = [];
-    for (const d of lastScan.drops) if (!d.claimed && d.streamers) all.push(...d.streamers);
+    for (const d of lastScan.drops) if (d.streamers) all.push(...d.streamers);
     const liveMap = await verifyLiveStreamers(all);
     if (!liveMap) return;
 
     const nowLive = [];
     for (const d of lastScan.drops) {
-      if (d.claimed || !d.streamers) continue;
+      if (!d.streamers) continue;
       d.live = false;
       for (const s of d.streamers) {
         const login = ((s.url || "").split("/").filter(Boolean).pop() || s.name || "").toLowerCase();
         if (login in liveMap) { s.live = liveMap[login]; if (s.live) d.live = true; }
       }
-      if (d.live && d.wasLive === false) nowLive.push(d);
+      if (!d.claimed && d.live && d.wasLive === false) nowLive.push(d);
       d.wasLive = !!d.live;
     }
     lastScan.lastUpdated = new Date().toISOString();
@@ -1038,6 +1099,10 @@ async function monitorTick() {
 }
 
 chrome.notifications.onClicked.addListener((id) => {
+  if (id.indexOf("claimfail-") === 0) {
+    chrome.tabs.create({ url: INV_URL, active: true });
+    return;
+  }
   if (id.indexOf("ready-") === 0) {
     chrome.tabs.create({ url: INV_URL, active: false });
     return;
@@ -1092,39 +1157,24 @@ function etaMinutes(d, now) {
   return eta < 0 ? 0 : eta;
 }
 
-// ---------- auto-claim fallback: click the Claim button on the inventory page ----------
-// used when the API can't be used (no dropInstanceID, or integrity/API reject)
-const FALLBACK_RETRY_MS = 30 * 60000;
+// ---------- auto-claim failure reporting ----------
+const CLAIM_FAILURE_NOTICE_INTERVAL_MS = 30 * 60000;
 function setClaimStatus(d, result) {
   try {
     chrome.storage.local.set({ claimStatus: { name: d.name, instanceId: !!d.dropInstanceID, at: new Date().toISOString(), result: result } });
   } catch (e) {}
 }
-function claimDropFallback(d, source) {
-  if (d._fallbackTry && Date.now() - d._fallbackTry < FALLBACK_RETRY_MS) { return; }  // retry the page-claim at most every 30 min
-  d._fallbackTry = Date.now();
+function notifyClaimFailure(d, source) {
+  if (d._claimFailureNoticeAt && Date.now() - d._claimFailureNoticeAt < CLAIM_FAILURE_NOTICE_INTERVAL_MS) return;
+  d._claimFailureNoticeAt = Date.now();
   try {
     chrome.notifications.create("claimfail-" + norm(d.name), {
       type: "basic", iconUrl: "icon128.png", silent: false, priority: 2,
       title: "Auto-claim: " + d.name,
-      message: source ? ("(" + source + ") - clicking the inventory Claim button") : "clicking the inventory Claim button..."
+      message: "Automatic claim failed. Click to open Twitch Drops Inventory and claim it manually."
     });
   } catch (e) {}
-  beep(3);
-  setClaimStatus(d, "page-claim (trying)");
-  claimOnPage(d.name).then(async (ok) => {
-    if (ok) {
-      setClaimStatus(d, "ok (page)");
-      try { await addClaimHistory(d.name, "page-claim"); } catch (e) {}
-      if (!d.claimed) { d.claimed = true; d.pct = 100; d.progress = "100%"; d.wasReady = false; }
-      try { await chrome.storage.local.set({ lastScan }); } catch (e) {}
-      updateBadge();
-    } else {
-      setClaimStatus(d, "FAIL page (Claim button not found)");
-    }
-  }).catch((e) => {
-    setClaimStatus(d, "FAIL page " + String(e && e.message || e).slice(0, 60));
-  });
+  setClaimStatus(d, "FAIL auto-claim " + String(source || "unknown").slice(0, 60));
 }
 
 // call after merging in-progress data: progNames = normalized names still in progress
@@ -1145,28 +1195,28 @@ async function trackReady(lastScan, progNames) {
       notifyReady(d);
     }
     // auto-claim via API when we have a dropInstanceID, else click the page button
-    const claimReady = d.pct >= 100 && !d.claimed &&
-      (!d._lastClaimTry || Date.now() - d._lastClaimTry > 5 * 60000);
+    const s = d.pct >= 100 && !d.claimed ? await getNotifSettings() : null;
+    const claimReady = isAutoClaimEligible(d, !!(s && s.autoClaim), Date.now());
     if (claimReady) {
       d._lastClaimTry = Date.now();
-      const s = await getNotifSettings();
-      if (s.autoClaim) {
-        if (d.dropInstanceID) {
-          claimDropAPI(d.dropInstanceID).then(async (res) => {
-            setClaimStatus(d, res.ok ? "ok (api)" : ("FAIL " + res.error));
-            if (res.ok) {
-              await markClaimed(d, "api-claim");
-              d.wasReady = false;
-              try { await chrome.storage.local.set({ lastScan: lastScan }); } catch (e) {}
-              updateBadge();
-            } else {
-              claimDropFallback(d, "api:" + String(res.error).slice(0, 40));
-            }
-          });
-        } else {
-          // no instance id returned by Twitch - claim by clicking the real button
-          claimDropFallback(d, "no-instance-id");
-        }
+      if (d.dropInstanceID) {
+        claimDropAPI(d.dropInstanceID).then(async (res) => {
+          setClaimStatus(d, res.ok ? "ok (api)" : ("FAIL " + res.error));
+          if (res.ok) {
+            await markClaimed(d, "api-claim");
+            d.wasReady = false;
+            try { await chrome.storage.local.set({ lastScan: lastScan }); } catch (e) {}
+            updateBadge();
+          } else {
+            notifyClaimFailure(d, "api:" + String(res.error).slice(0, 40));
+          }
+        }).catch((error) => {
+          const reason = String(error && error.message || error).slice(0, 40);
+          setClaimStatus(d, "FAIL " + reason);
+          notifyClaimFailure(d, "api:" + reason);
+        });
+      } else {
+        notifyClaimFailure(d, "no-instance-id");
       }
     }
     d._inProgress = inProg;
@@ -1225,27 +1275,7 @@ async function getTwitchCookies() {
     const stored = (await chrome.storage.local.get("twitchAuth")).twitchAuth;
     if (stored && stored.auth) { cachedAuth = stored; return cachedAuth; }
   } catch (e) {}
-  // 3) page context: open a hidden twitch tab, read document.cookie there
-  const authUrl = "https://www.twitch.tv/directory?cb=" + Date.now();
-  const tab = await chrome.tabs.create({ url: authUrl, active: false }); markOurTab(tab.id);
-  tabLog("open", authUrl);
-  try {
-    await waitTabLoad(tab.id);
-    await sleep(2500);
-    let res = null;
-    for (let i = 0; i < 5 && !res; i++) {
-      try { res = await chrome.tabs.sendMessage(tab.id, { action: "getAuth" }); } catch (e) {}
-      if (!res) await sleep(1000);
-    }
-    if (res && res.auth) {
-      cachedAuth = { auth: res.auth, device: res.device || "companion" };
-      try { chrome.storage.local.set({ twitchAuth: cachedAuth }); } catch (e) {}
-      return cachedAuth;
-    }
-    return { error: "no auth in page cookie" };
-  } finally {
-    try { await chrome.tabs.remove(tab.id); tabLog("close", authUrl); } catch (e) {}
-  }
+  return { error: "Twitch login was not available from extension cookies. Open Twitch and sign in, then scan again." };
 }
 
 const GQL_HEADERS = (auth, device) => ({
@@ -1261,8 +1291,7 @@ async function gqlInventory() {
   if (!ck || !ck.auth) return { error: (ck && ck.error) || "no twitch auth cookie - log in at twitch.tv" };
   const auth = ck.auth, device = ck.device;
 
-  // 1) PERSISTED "Inventory" query - Twitch authorizes it fully; it returns
-  //    gameEventDrops (the COMPLETE claimed list, incl. fully-completed campaigns)
+  // Ask Twitch's inventory operation for current campaign rewards and progress.
   let invR = null;
   let usedPersisted = false;
   let persistedErr = null;
@@ -1272,7 +1301,7 @@ async function gqlInventory() {
       headers: GQL_HEADERS(auth, device),
       body: JSON.stringify([{
         operationName: "Inventory",
-        variables: { fetchRewardCampaigns: false },
+        variables: { fetchRewardCampaigns: true },
         extensions: { persistedQuery: { version: 1, sha256Hash: "8337eb8541b314040b0edde0c09c5c7a2783ba1960aa9edfbf3bac16d0fec404" } }
       }])
     });
@@ -1288,8 +1317,9 @@ async function gqlInventory() {
     persistedErr = String(e && e.message || e);
   }
 
-  // 2) ad-hoc fallback (no gameEventDrops here - Twitch nulls it for ad-hoc calls)
-  if (!invR) {
+  // Read the active campaign separately. Historical gameEventDrops cannot
+  // identify which current reward is claimed or how far it has progressed.
+  if (!invR || !Array.isArray(invR.dropCampaignsInProgress)) {
     const q1 = `query {
       currentUser {
         id
@@ -1303,6 +1333,9 @@ async function gqlInventory() {
               id
               name
               requiredMinutesWatched
+              benefitEdges {
+                benefit { name }
+              }
               self { currentMinutesWatched isClaimed dropInstanceID }
             }
           }
@@ -1316,11 +1349,21 @@ async function gqlInventory() {
         body: JSON.stringify({ query: q1 })
       });
       const data = JSON.parse(await resp2.text());
-      if (data.errors) return { error: "gql: " + JSON.stringify(data.errors).slice(0, 250) };
-      invR = data.data && data.data.currentUser && data.data.currentUser.inventory;
-      if (!invR) return { error: "no inventory in response" };
+      if (data.errors) {
+        if (!invR || !Array.isArray(invR.dropCampaignsInProgress)) {
+          return { error: "gql: " + JSON.stringify(data.errors).slice(0, 250) };
+        }
+      } else {
+        const activeInventory = data.data && data.data.currentUser && data.data.currentUser.inventory;
+        if (activeInventory) invR = activeInventory;
+      }
+      if (!invR || !Array.isArray(invR.dropCampaignsInProgress)) {
+        return { error: "Twitch did not return current campaign inventory." };
+      }
     } catch (e) {
-      return { error: "fetch failed: " + String(e && e.message || e) };
+      if (!invR || !Array.isArray(invR.dropCampaignsInProgress)) {
+        return { error: "fetch failed: " + String(e && e.message || e) };
+      }
     }
   }
 
@@ -1345,48 +1388,43 @@ async function gqlInventory() {
         dropInstanceID: self.dropInstanceID || null,
         earnedMinutesWatched: self.currentMinutesWatched || 0,
         requiredMinutesWatched: td.requiredMinutesWatched || 0,
-        game: camp.game, campaign: { name: camp.name } });
+        game: camp.game, campaign: { id: camp.id, name: camp.name } });
     }
   }
   return { drops: drops, diag: diag };
 }
 
 // ---------- light background updater ----------
-// claimed status + progress refresh via ONE hidden tab (no campaigns page = fast)
+// Claimed status and progress come from Twitch's current campaign inventory.
 async function mergeInventoryData(lastScan, inv, st) {
-  const claimed = inv.claimed || [];
-  let matched = 0;
-  for (const d of lastScan.drops) d.claimed = !!d.facepunchClaimed;
-  for (const c of claimed) {
-    if (!c.name) continue;
-    const byInstance = c.dropInstanceID
-      ? lastScan.drops.find(d => d.dropInstanceID === c.dropInstanceID)
-      : null;
-    const cands = byInstance
-      ? [byInstance]
-      : lastScan.drops.filter(d => norm(d.name) === norm(c.name));
-    for (const d of cands) {
-      d.claimed = true; matched++;
+  const findInventoryMatch = (entry) => {
+    if (entry.dropInstanceID) {
+      const byInstance = lastScan.drops.filter(d => d.dropInstanceID === entry.dropInstanceID);
+      if (byInstance.length === 1) return byInstance[0];
     }
-  }
+    const exact = lastScan.drops.filter(d => norm(d.name) === norm(entry.name));
+    return exact.length === 1 ? exact[0] : null;
+  };
+  let matched = 0;
   const progNames = [];
-  for (const p of (inv.inProgress || [])) {
-    const d = (lastScan.drops.filter(x => nameMatches(x.name, p.name)).length > 1)
-      ? pickProgressMatch(lastScan.drops, p.name)
-      : pickMatch(lastScan.drops, p.name);
+  for (const entry of (inv.entries || [])) {
+    if (!entry.name) continue;
+    const d = findInventoryMatch(entry);
     if (d) {
-      d.pct = Math.max(d.pct || 0, p.percent); d.progress = d.pct + "%";
-      if (p.dropInstanceID) d.dropInstanceID = p.dropInstanceID;
-      progNames.push(norm(d.name));
+      globalThis.mergeInventoryStatus(d, entry);
+      if (!d.claimed && entry.percent !== null) {
+        progNames.push(norm(d.name));
+      }
+      matched++;
     }
   }
   await trackReady(lastScan, progNames);
-  lastScan.claimStatusVersion = 2;
+  lastScan.claimStatusVersion = 3;
   lastScan.lastUpdated = new Date().toISOString();
   await chrome.storage.local.set({ lastScan });
   st.ok = true;
   st.matched = matched;
-  st.inProgress = (inv.inProgress || []).length;
+  st.inProgress = progNames.length;
 }
 
 // a stored FAIL whose drop is confirmed claimed on the inventory is stale - flip it to ok
@@ -1401,7 +1439,8 @@ async function syncStaleClaimStatus(lastScan) {
   } catch (e) {}
 }
 
-async function updateClaimedAndProgress(allowTab) {
+async function updateClaimedAndProgress() {
+  if (scanning) return;
   const st = { attemptedAt: new Date().toISOString() };
   try {
     const { lastScan } = await chrome.storage.local.get("lastScan");
@@ -1411,19 +1450,24 @@ async function updateClaimedAndProgress(allowTab) {
       return;
     }
     const g = await gqlInventory();
-    let inv = { claimed: [], inProgress: [] };
-    if (g.drops) {
-      for (const gd of g.drops) {
-        const isRust = /rust/i.test((gd.game && gd.game.name) || "") || /rust/i.test(gd.campaign && gd.campaign.name || "") || /rust/i.test(gd.name || "");
-        if (!isRust) continue;
+    let inv = { entries: [], authoritative: false };
+    const rustDrops = (g.drops || []).filter(gd =>
+      globalThis.isRustInventoryReward(gd, lastScan.drops, lastScan.campaignId)
+    );
+    if (Array.isArray(g.drops) && !g.error && rustDrops.length) {
+      inv.authoritative = true;
+      for (const gd of rustDrops) {
         const earned = gd.earnedMinutesWatched || 0;
         const required = gd.requiredMinutesWatched || 0;
-        if (gd.isClaimed) inv.claimed.push({ name: gd.name, dropInstanceID: gd.dropInstanceID || null });
-        else if (required > 0 && earned >= required) inv.inProgress.push({ name: gd.name, percent: 100, dropInstanceID: gd.dropInstanceID || null });
-        else if (required > 0 && earned > 0) inv.inProgress.push({ name: gd.name, percent: Math.min(99, Math.round(earned / required * 100)), dropInstanceID: gd.dropInstanceID || null });
+        inv.entries.push({
+          name: gd.name,
+          isClaimed: !!gd.isClaimed,
+          percent: gd.isClaimed ? 100 : globalThis.calculateProgressPercent(earned, required),
+          dropInstanceID: gd.dropInstanceID || null
+        });
       }
       st.source = "api";
-      st.claimedSeen = inv.claimed.length;
+      st.claimedSeen = inv.entries.filter(entry => entry.isClaimed).length;
       if (g.diag) {
         st.geCount = g.diag.geCount; st.campCount = g.diag.campCount;
         st.persisted = g.diag.persisted;
@@ -1431,40 +1475,23 @@ async function updateClaimedAndProgress(allowTab) {
         if (!g.diag.persisted && !g.diag.persistedErr) st.apiError = "persisted query returned nothing";
       }
     } else {
-      st.apiError = g.error || "unknown";
+      st.apiError = g.error || (Array.isArray(g.drops)
+        ? "No current Rust rewards matched Twitch campaign inventory."
+        : "Twitch returned no campaign inventory.");
     }
 
-    if (!allowTab) {
-      if (st.source === "api") {
-        await withState(async () => { await mergeInventoryData(lastScan, inv, st); });
-        await syncStaleClaimStatus(lastScan);
-      }
-      st.finishedAt = new Date().toISOString();
-      await chrome.storage.local.set({ updateStatus: st });
-      return;
+    if (st.source === "api" && !scanning) {
+      let updatedScan = null;
+      await withState(async () => {
+        if (scanning) return;
+        const current = await chrome.storage.local.get("lastScan");
+        if (!current.lastScan || !current.lastScan.drops || !current.lastScan.drops.length) return;
+        updatedScan = current.lastScan;
+        await mergeInventoryData(updatedScan, inv, st);
+      });
+      if (updatedScan) await syncStaleClaimStatus(updatedScan);
+      updateBadge();
     }
-
-    // optional authoritative tab recheck (only when enabled in settings)
-    try {
-      const url = INV_URL + "?cb=" + Date.now();
-      const tab = await chrome.tabs.create({ url: url, active: false }); markOurTab(tab.id);
-      tabLog("open", url);
-      try {
-        await waitTabLoad(tab.id);
-        try { await chrome.tabs.reload(tab.id, { bypassCache: true }); await waitTabLoad(tab.id); } catch (e) {}
-        const tabInv = await extractWithRetry(tab.id);
-        if (!inv.inProgress.length) inv.inProgress = tabInv.inProgress || [];
-        st.source = st.source ? st.source + "+tab" : "tab";
-      } finally {
-        try { await chrome.tabs.remove(tab.id); tabLog("close", url); } catch (e) {}
-      }
-    } catch (e) {
-      st.tabError = String(e && e.message || e);
-    }
-
-    if (st.source) await withState(async () => { await mergeInventoryData(lastScan, inv, st); });
-    await syncStaleClaimStatus(lastScan);
-    updateBadge();
   } catch (e) {
     st.error = String(e && e.message || e);
   }
@@ -1472,7 +1499,7 @@ async function updateClaimedAndProgress(allowTab) {
   await chrome.storage.local.set({ updateStatus: st });
 }
 
-const BUILD_TAG = "5.33-" + Date.now();
+const BUILD_TAG = "5.43-" + Date.now();
 chrome.storage.local.set({ buildTag: BUILD_TAG });
 chrome.alarms.clearAll(() => {
   chrome.alarms.create("tick", { periodInMinutes: 20 / 60 });
@@ -1487,10 +1514,7 @@ chrome.alarms.onAlarm.addListener((a) => {
   chrome.storage.local.set({ alarmHeartbeat: { name: a.name, at: lastDataAt, tick: tickCount, doLive: doLive } });
   startKeepalive();
   (async () => {
-    // hidden-tab claimed re-check: OFF by default, every ~30 min when enabled
-    const extSettings = ((await chrome.storage.local.get("extSettings")).extSettings) || {};
-    const allowTab = !!extSettings.tabRecheck && (tickCount % 90) === 0;
-    try { await updateClaimedAndProgress(allowTab); } catch (e) {}
+    try { await updateClaimedAndProgress(); } catch (e) {}
     if (doLive) { try { await monitorTick(); } catch (e) {} }
     stopKeepalive();
   })();
@@ -1501,7 +1525,7 @@ chrome.runtime.onStartup.addListener(() => {
   setTimeout(() => {
     startKeepalive();
     (async () => {
-      try { await updateClaimedAndProgress(false); } catch (e) {}
+      try { await updateClaimedAndProgress(); } catch (e) {}
       try { await monitorTick(); } catch (e) {}
       stopKeepalive();
     })();
@@ -1513,7 +1537,7 @@ chrome.runtime.onInstalled.addListener(() => {
   setTimeout(() => {
     startKeepalive();
     (async () => {
-      try { await updateClaimedAndProgress(false); } catch (e) {}
+      try { await updateClaimedAndProgress(); } catch (e) {}
       try { await monitorTick(); } catch (e) {}
       stopKeepalive();
     })();

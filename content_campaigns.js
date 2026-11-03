@@ -14,16 +14,26 @@ function scrollTargets() {
 async function scrollToBottom() {
   const targets = scrollTargets();
   let last = 0, stable = 0;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 16; i++) {
     for (const t of targets) t.scrollTop = t.scrollHeight;
     window.scrollTo(0, document.body.scrollHeight);
-    await sleepMs(500);
+    await sleepMs(200);
     const h = Math.max(0, ...targets.map(t => t.scrollHeight));
-    if (h === last) { if (++stable >= 3) break; } else { stable = 0; last = h; }
+    if (h === last) { if (++stable >= 2) break; } else { stable = 0; last = h; }
   }
   for (const t of targets) t.scrollTop = 0;
   window.scrollTo(0, 0);
-  await sleepMs(800);
+}
+
+async function waitForRustRewards(header, timeoutMs) {
+  if (!header) { return null; }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const root = rustCampaignRoot(header);
+    if (root && root.querySelector('img[src*="/REWARD/"], img[alt^="Drop image for "]')) { return root; }
+    await sleepMs(150);
+  }
+  return rustCampaignRoot(header);
 }
 
 const NON_CHANNEL = ["directory","drops","settings","inventory","downloads","p","subscriptions","wallet","friends","messages","creatordashboard","moderator"];
@@ -31,7 +41,11 @@ const NON_CHANNEL = ["directory","drops","settings","inventory","downloads","p",
 function extractCampaigns(root) {
   const drops = [];
   const seen = new Set();
-  const imgs = root ? Array.from(root.querySelectorAll('img[src*="/REWARD/"]')) : [];
+  const imgs = root
+    ? Array.from(root.querySelectorAll("img")).filter(img =>
+        /\/REWARD\//i.test(img.getAttribute("src") || "") ||
+        /^Drop image for\s+/i.test(img.getAttribute("alt") || ""))
+    : [];
 
   imgs.forEach((img) => {
     const name = (img.getAttribute("alt") || "").replace(/^Drop image for\s+/i, "").trim();
@@ -53,18 +67,12 @@ function extractCampaigns(root) {
     for (let d = 0; d < 9 && pnode && percent === null && (!root || root.contains(pnode)); d++) {
       const pb = pnode.querySelector ? pnode.querySelector('[role="progressbar"]') : null;
       if (pb) {
-        const now = parseFloat(pb.getAttribute("aria-valuenow") || "");
-        const max = parseFloat(pb.getAttribute("aria-valuemax") || "");
-        if (!isNaN(now) && !isNaN(max) && max > 0) percent = Math.min(100, Math.round(now / max * 100));
-        else {
-          const al = pb.getAttribute("aria-label") || "";
-          const am = al.match(/(\d{1,3})\s*%/);
-          if (am) percent = parseInt(am[1], 10);
-        }
+        percent = parseProgressPercent(pnode.innerText) ??
+          parseProgressPercent(pb.getAttribute("aria-label")) ??
+          parseProgressPercent(pb.getAttribute("aria-valuenow") + "/" + pb.getAttribute("aria-valuemax"));
       }
       if (percent === null && pnode.innerText) {
-        const pc = pnode.innerText.match(/(\d{1,3})\s*%/);
-        if (pc) percent = parseInt(pc[1], 10);
+        percent = parseProgressPercent(pnode.innerText);
       }
       pnode = pnode.parentElement;
     }
@@ -90,12 +98,16 @@ function extractCampaigns(root) {
 }
 
 function findRustAccordion() {
-  const els = Array.from(document.querySelectorAll("p, strong, h1, h2, h3, span, div"));
+  const els = Array.from(document.querySelectorAll(
+    "button, [role='button'], [role='heading'], [aria-controls], h1, h2, h3, h4, p, strong, span"
+  ));
   for (const el of els) {
-    const own = (el.childNodes.length && el.textContent || "").replace(/\s+/g, " ").trim();
-    if (!own || own.length > 60) continue;
-    if (own === "Rust" || (own.startsWith("Rust") && el.parentElement && /facepunch/i.test(el.parentElement.textContent || ""))) {
-      const clickable = el.closest("button, [role='button'], [role='heading']") ||
+    const own = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!own || own.length > 100) continue;
+    if (/^Rust(?:\b|:)/i.test(own)) {
+      const clickable = el.matches("[aria-controls]")
+        ? el
+        : el.closest("button, [role='button'], [role='heading']") ||
                         (el.parentElement && el.parentElement.closest("button, [role='button'], [role='heading']"));
       if (clickable) return clickable;
     }
@@ -116,8 +128,8 @@ function rustCampaignRoot(header) {
     if (controlled) return controlled;
   }
   let node = header;
-  for (let d = 0; d < 8 && node; d++, node = node.parentElement) {
-    if (node.querySelector && node.querySelector('img[src*="/REWARD/"]')) return node;
+  for (let d = 0; d < 16 && node; d++, node = node.parentElement) {
+    if (node.querySelector && node.querySelector('img[src*="/REWARD/"], img[alt^="Drop image for "]')) return node;
   }
   return null;
 }
@@ -131,7 +143,7 @@ function isAccordionExpanded(header) {
     if (root.hidden || root.getAttribute("aria-hidden") === "true") return false;
     const style = window.getComputedStyle(root);
     if (style.display === "none" || style.visibility === "hidden") return false;
-    if (root.querySelector('img[src*="/REWARD/"]')) return true;
+    if (root.querySelector('img[src*="/REWARD/"], img[alt^="Drop image for "]')) return true;
   }
   return null;
 }
@@ -140,24 +152,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "extract") {
     (async () => {
       const header = findRustAccordion();
-      if (header && isAccordionExpanded(header) !== true) header.click();
-      await sleepMs(1500);
-      await scrollToBottom();
-      let root = rustCampaignRoot(header);
+      if (header && isAccordionExpanded(header) !== true) { header.click(); }
+      let root = await waitForRustRewards(header, 4000);
+      if (header) { await scrollToBottom(); }
+      root = rustCampaignRoot(header) || root;
       let result = extractCampaigns(root);
       if (result.drops.length === 0 && header && isAccordionExpanded(header) === false) {
         header.click();
-        await sleepMs(1500);
+        await waitForRustRewards(header, 2500);
         await scrollToBottom();
-        root = rustCampaignRoot(header);
+        root = rustCampaignRoot(header) || root;
         result = extractCampaigns(root);
       }
       if (result.drops.length === 0) {
-        result.error = "Twitch has not listed a Rust category on the Drops Campaigns page yet.";
+        result.error = header
+          ? "Rust is listed on Twitch, but its campaign rewards are not available on the Drops Campaigns page yet."
+          : "Twitch has not listed a Rust category on the Drops Campaigns page yet.";
       }
       sendResponse({
         ...result,
-        rustFound: !!header && result.drops.length > 0,
+        rustFound: !!header,
         error: result.drops.length === 0 ? (result.error || "Twitch has not started the Rust category yet.") : null,
         url: location.href
       });
